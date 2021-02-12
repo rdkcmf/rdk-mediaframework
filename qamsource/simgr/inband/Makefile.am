@@ -54,7 +54,9 @@ LOCAL_DEFINES =   -DMERGE_INTEL \
                   -D$(MFR_NAME) \ 
                   -DIPPV_CLIENT_ENABLED  \
                   -DUSE_PXYSRVC  \
-                  -DQAMSRC_PMTBUFFER_PROPERTY
+                  -DQAMSRC_PMTBUFFER_PROPERTY \
+                  -DQAMSRC_PATBUFFER_PROPERTY \
+                  -DQAMSRC_CATBUFFER_PROPERTY
 
 if ENABLE_PODMGR
 LOCAL_DEFINES += -DUSE_POD -DMPOD_SUPPORT -DTEST_WITH_PODMGR -DUSE_POD_IPC
@@ -71,6 +73,10 @@ SF_LIBS= -loobsectionfilter \
 	 -linbsectionfilter
 else
 SF_LIBS=
+endif
+
+if ENABLE_EXTERNAL_CAS
+LOCAL_DEFINES += -DUSE_EXTERNAL_CAS -DCAT_FUNCTIONALITY
 endif
 
 AM_CXXFLAGS = -pthread $(GST_CFLAGS) $(LOCAL_DEFINES) \

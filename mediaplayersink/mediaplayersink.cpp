@@ -48,6 +48,7 @@
 #define GSTPLAYERSINKBIN_EVENT_ERROR_VIDEO_PTS 0x08
 #define GSTPLAYERSINKBIN_EVENT_ERROR_AUDIO_PTS 0x09
 #define GSTPLAYERSINKBIN_EVENT_PMT_UPDATE      0x20
+#define GSTPLAYERSINKBIN_EVENT_LANGUAGE_CHANGE 0x21
 
 //-- Callback -----------------------------------------------------------------
 template <typename CB> class Callback
@@ -104,10 +105,17 @@ public:
     const char * getCCDescriptor();
     const char * getEISSData();
     void setAudioLanguage (const char* pAudioLang);
+    const char * getPreferredAudioLanguage(void);
     void setAuxiliaryAudioLang(const char* pAudioLang);
     void setPreferredAudioTrack(const char* pAudioTrackPreference);
     void setVideoZoom (unsigned short zoomVal);
     void setEissFilterStatus (bool eissStatus);
+    void setVideoKeySlot (const char *keySlot);
+    void setAudioKeySlot (const char *keySlot);
+    void deleteVideoKeySlot (void);
+    void deleteAudioKeySlot (void);
+    int getVideoPid();
+    int getAudioPid();
     void addInbandFilterFunc(unsigned int funcPointer,unsigned int cbData);
     void setPrimeDecode(bool enable);
     void setPipOutput(bool pip);
@@ -140,6 +148,7 @@ public:
     void setVideoPlayingCallback(MediaPlayerSink::callback_t cb, void* data);
     void setMediaWarningCallback(MediaPlayerSink::callback_t cb, void* data);
     void setPmtUpdateCallback(MediaPlayerSink::callback_t cb, void* data);
+    void setLanguageChangeCallback(MediaPlayerSink::callback_t cb, void* data);
     const char* getMediaWarningString(void);
     short getMediaBufferSize(void);
     void setNetWorkBufferSize (short bufferSize);
@@ -189,6 +198,7 @@ private:
 
     GenericCallback m_mediaWarningCallback;
     GenericCallback m_PmtUpdateCallback;
+    GenericCallback m_LanguageChangeCallback;
 
     Rect m_videoRect;
     bool m_haveAudio;
@@ -202,6 +212,7 @@ private:
     std::string m_audioTrack;
     std::string m_captionDescriptor;
     std::string m_eissDataBuffer;
+    std::string m_preferredAudioLang;
     double m_speed;
     float m_volume;
     bool m_show_last_frame;
@@ -574,6 +585,45 @@ void MediaPlayerSinkPrivate::setEissFilterStatus (bool eissStatus)
     return;
 }
 
+void MediaPlayerSinkPrivate::setVideoKeySlot (const char *keySlot)
+{
+    MPSINKLOG_WARN("Video Key Slot received\n");
+    if (m_playersinkbin)
+            g_object_set(m_playersinkbin, "video-keyslot", keySlot, NULL);
+}
+
+void MediaPlayerSinkPrivate::setAudioKeySlot (const char *keySlot)
+{
+    MPSINKLOG_WARN("Audio Key Slot received\n");
+    if (m_playersinkbin)
+            g_object_set(m_playersinkbin, "audio-keyslot", keySlot, NULL);
+
+}
+
+int MediaPlayerSinkPrivate::getVideoPid()
+{
+    int videoPid = -1;
+
+    if (!m_playersinkbin)
+        return videoPid;
+
+    g_object_get(m_playersinkbin, "video-pid", &videoPid, NULL);
+
+    return videoPid;
+}
+
+int MediaPlayerSinkPrivate::getAudioPid()
+{
+    int audioPid = -1;
+
+    if (!m_playersinkbin)
+        return audioPid;
+
+    g_object_get(m_playersinkbin, "audio-pid", &audioPid, NULL);
+
+    return audioPid;
+}
+
 #define G_VALUE_INIT {0,{{0}}}
 unsigned long MediaPlayerSinkPrivate::getVideoDecoderHandle() const
 {
@@ -764,6 +814,11 @@ void MediaPlayerSinkPrivate::setPmtUpdateCallback(MediaPlayerSink::callback_t cb
     m_PmtUpdateCallback.set(cb, data);
 }
 
+void MediaPlayerSinkPrivate::setLanguageChangeCallback(MediaPlayerSink::callback_t cb, void* data)
+{
+    m_LanguageChangeCallback.set(cb, data);
+}
+
 void MediaPlayerSinkPrivate::eventplayersinkbinCB(GstElement * playersinkbin, gint status)
 {
     switch (status)
@@ -820,6 +875,10 @@ void MediaPlayerSinkPrivate::eventplayersinkbinCB(GstElement * playersinkbin, gi
                 //m_mediaWarningCallback();
             }
             break;
+	case GSTPLAYERSINKBIN_EVENT_LANGUAGE_CHANGE :
+             MPSINKLOG_INFO("MediaPlayerSinkPrivate::eventplayersinkbin: got language Change.\n");
+             m_LanguageChangeCallback();
+             break;
         default:
             MPSINKLOG_INFO("%s status = 0x%x (Unknown)\n", __FUNCTION__, status);
             break;
@@ -1161,6 +1220,11 @@ void MediaPlayerSink::setPmtUpdateCallback(callback_t cb, void* data)
     return IMPL->setPmtUpdateCallback(cb, data);
 }
 
+void MediaPlayerSink::setLanguageChangeCallback(callback_t cb, void* data)
+{
+    return IMPL->setLanguageChangeCallback(cb, data);
+}
+
 unsigned long MediaPlayerSink::getVideoDecoderHandle() const
 {
     return IMPL->getVideoDecoderHandle();
@@ -1250,6 +1314,74 @@ void MediaPlayerSink::setVideoZoom (unsigned short zoomVal)
 void MediaPlayerSink::setEissFilterStatus (bool eissStatus)
 {
     IMPL->setEissFilterStatus (eissStatus);
+}
+
+void MediaPlayerSink::setVideoKeySlot (const char *keySlot)
+{
+    IMPL->setVideoKeySlot (keySlot);
+}
+
+void MediaPlayerSink::setAudioKeySlot (const char *keySlot)
+{
+    IMPL->setAudioKeySlot (keySlot);
+}
+
+void MediaPlayerSinkPrivate::deleteVideoKeySlot (void)
+{
+    if (m_playersinkbin)
+            g_object_set(m_playersinkbin, "video-keyslot", NULL, NULL);
+}
+
+void MediaPlayerSinkPrivate::deleteAudioKeySlot (void)
+{
+    if (m_playersinkbin)
+            g_object_set(m_playersinkbin, "audio-keyslot", NULL, NULL);
+
+}
+
+const char * MediaPlayerSinkPrivate::getPreferredAudioLanguage(void)
+{
+    GValue value = G_VALUE_INIT;
+
+    g_value_init(&value, G_TYPE_STRING);
+
+    g_object_get_property(G_OBJECT(m_playersinkbin), "preferred-language", &value);
+
+    const char* val_str = (const char *) g_value_get_string (&value);
+
+    if (val_str) {
+        m_preferredAudioLang = val_str;
+    } else {
+        m_preferredAudioLang = "";
+    }
+    g_value_unset(&value);
+
+    return m_preferredAudioLang.c_str();
+}
+
+void MediaPlayerSink::deleteVideoKeySlot (void)
+{
+    IMPL->deleteVideoKeySlot ();
+}
+
+void MediaPlayerSink::deleteAudioKeySlot (void)
+{
+    IMPL->deleteAudioKeySlot ();
+}
+
+const char *MediaPlayerSink::getPreferredAudioLanguage()
+{
+    return IMPL->getPreferredAudioLanguage();
+}
+
+int MediaPlayerSink::getVideoPid()
+{
+    return IMPL->getVideoPid();
+}
+
+int MediaPlayerSink::getAudioPid()
+{
+    return IMPL->getAudioPid();
 }
 
 void MediaPlayerSink::addInbandFilterFunc(unsigned int funcPointer,unsigned int cbData)

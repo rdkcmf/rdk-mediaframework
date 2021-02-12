@@ -1343,7 +1343,7 @@ RMFResult RMFQAMSrcImpl::open(const char* uri, char* mimetype)
 		pInbandSI = NULL;
 		return RMF_QAMSRC_ERROR_DEMUX;
 	}
-#ifdef CAMGR_PRESENT
+#if defined(CAMGR_PRESENT) || defined(USE_EXTERNAL_CAS)
   ret = pInbandSI->RequestTsCatInfo();
   if(RMF_SUCCESS != ret )
   {
@@ -1737,6 +1737,160 @@ unsigned int RMFQAMSrcImpl::compareMediaInfo(rmf_MediaInfo *newMediaInfo)
 	}
 	RDK_LOG( RDK_LOG_INFO, "LOG.RDK.QAMSRC", "Exit %s():%d \n" , __FUNCTION__, ret);
 	return ret;
+}
+
+void RMFQAMSrcImpl::setFilter(uint16_t pid, char* filterParam, uint32_t *pFilterId)
+{
+	RDK_LOG( RDK_LOG_TRACE1, "LOG.RDK.QAMSRC", "%s - setFilter in RMFQAMSrcImpl\n", __FUNCTION__);
+#ifndef DISABLE_INBAND_MGR
+	RMFResult ret = pInbandSI->setFilter(pid, filterParam, pFilterId);
+	if( ret != RMF_INBSI_SUCCESS) {
+		RDK_LOG( RDK_LOG_ERROR, "LOG.RDK.QAMSRC", "%s - Create filter failed ret = 0x%x\n", __FUNCTION__, ret);
+	}
+#else
+	*pFilterId = 0;
+#endif
+}
+
+void RMFQAMSrcImpl::releaseFilter(uint32_t filterId)
+{
+	RDK_LOG( RDK_LOG_TRACE1, "LOG.RDK.QAMSRC", "%s - releaseFilter in RMFQAMSrcImpl\n", __FUNCTION__);
+#ifndef DISABLE_INBAND_MGR
+	RMFResult ret = pInbandSI->releaseFilter(filterId);
+	if( ret != RMF_INBSI_SUCCESS) {
+		RDK_LOG( RDK_LOG_ERROR, "LOG.RDK.QAMSRC", "%s - Destroy/Release filter failed ret = 0x%x\n", __FUNCTION__, ret);
+	}
+#endif
+}
+
+void RMFQAMSrcImpl::resumeFilter(uint32_t filterId)
+{
+        RDK_LOG( RDK_LOG_TRACE1, "LOG.RDK.QAMSRC", "%s - resumeFilter in RMFQAMSrcImpl\n", __FUNCTION__);
+#ifndef DISABLE_INBAND_MGR
+        if(!pInbandSI)
+        {
+            RDK_LOG( RDK_LOG_TRACE1, "LOG.RDK.QAMSRC", "%s - pInbandSI NULL in RMFQAMSrcImpl\n", __FUNCTION__);
+	    return;
+        }
+        RMFResult ret = pInbandSI->resumeFilter(filterId);
+        if( ret != RMF_INBSI_SUCCESS) {
+                RDK_LOG( RDK_LOG_ERROR, "LOG.RDK.QAMSRC", "%s - resume filter failed ret = 0x%x\n", __FUNCTION__, ret);
+        }
+#endif
+}
+
+void RMFQAMSrcImpl::pauseFilter(uint32_t filterId)
+{
+        RDK_LOG( RDK_LOG_TRACE1, "LOG.RDK.QAMSRC", "%s - pauseFilter in RMFQAMSrcImpl\n", __FUNCTION__);
+#ifndef DISABLE_INBAND_MGR
+        if(!pInbandSI)
+        {
+            RDK_LOG( RDK_LOG_TRACE1, "LOG.RDK.QAMSRC", "%s - pInbandSI NULL in RMFQAMSrcImpl\n", __FUNCTION__);
+            return;
+        }
+        RMFResult ret = pInbandSI->pauseFilter(filterId);
+        if( ret != RMF_INBSI_SUCCESS) {
+                RDK_LOG( RDK_LOG_ERROR, "LOG.RDK.QAMSRC", "%s - pause filter failed ret = 0x%x\n", __FUNCTION__, ret);
+        }
+#endif
+}
+
+void RMFQAMSrcImpl::getPATBuffer(std::vector<uint8_t>& buf, uint32_t* length) {
+	*length = 0;
+#ifdef QAMSRC_PATBUFFER_PROPERTY
+	RMFResult ret = pInbandSI->GetPATBuffer(NULL, length);
+	if( ret == RMF_INBSI_SUCCESS) {
+		buf.resize(*length);
+		if(buf.size() != *length)
+		{
+			RDK_LOG( RDK_LOG_ERROR, "LOG.RDK.QAMSRC", "%s - GetPMTBuffer failed - Not able to resize the buffer.\n", __FUNCTION__);
+			*length = 0;
+			buf.clear();
+			return;
+		}
+		ret = pInbandSI->GetPATBuffer(buf.data(), length);
+		if( ret != RMF_INBSI_SUCCESS)
+		{
+			RDK_LOG( RDK_LOG_ERROR, "LOG.RDK.QAMSRC", "%s - GetPATBuffer failed.\n", __FUNCTION__);
+		}
+	}
+	else {
+		RDK_LOG( RDK_LOG_ERROR, "LOG.RDK.QAMSRC", "%s - GetPATBuffer failed to get length. ret = 0x%x\n", __FUNCTION__, ret);
+	}
+#endif
+}
+
+void RMFQAMSrcImpl::getPMTBuffer(std::vector<uint8_t>& buf, uint32_t* length) {
+	*length = 0;
+#ifdef QAMSRC_PMTBUFFER_PROPERTY
+	RMFResult ret = pInbandSI->GetPMTBuffer(NULL, length);
+	if( ret == RMF_INBSI_SUCCESS) {
+		buf.resize(*length);
+		if(buf.size() != *length)
+		{
+			RDK_LOG( RDK_LOG_ERROR, "LOG.RDK.QAMSRC", "%s - GetPMTBuffer failed - Not able to resize the buffer.\n", __FUNCTION__);
+			*length = 0;
+			buf.clear();
+			return;
+		}
+		ret = pInbandSI->GetPMTBuffer(buf.data(), length);
+		if( ret != RMF_INBSI_SUCCESS)
+		{
+			RDK_LOG( RDK_LOG_ERROR, "LOG.RDK.QAMSRC", "%s - GetPMTBuffer failed.\n", __FUNCTION__);
+		}
+	}
+	else {
+		RDK_LOG( RDK_LOG_ERROR, "LOG.RDK.QAMSRC", "%s - GetPMTBuffer failed.\n", __FUNCTION__);
+	}
+#endif
+}
+
+void RMFQAMSrcImpl::getCATBuffer(std::vector<uint8_t>& buf, uint32_t* length) {
+	*length = 0;
+#ifdef QAMSRC_CATBUFFER_PROPERTY
+	RMFResult ret = pInbandSI->GetCATBuffer(NULL, length);
+	if( ret == RMF_INBSI_SUCCESS) {
+		buf.resize(*length);
+		if(buf.size() != *length)
+		{
+			RDK_LOG( RDK_LOG_ERROR, "LOG.RDK.QAMSRC", "%s - GetPMTBuffer failed - Not able to resize the buffer.\n", __FUNCTION__);
+			*length = 0;
+			buf.clear();
+			return;
+		}
+		ret = pInbandSI->GetCATBuffer(buf.data(), length);
+		if( ret != RMF_INBSI_SUCCESS)
+		{
+			RDK_LOG( RDK_LOG_ERROR, "LOG.RDK.QAMSRC", "%s - GetCATBuffer failed.\n", __FUNCTION__);
+		}
+	}
+	else {
+		RDK_LOG( RDK_LOG_ERROR, "LOG.RDK.QAMSRC", "%s - GetCATBuffer failed.\n", __FUNCTION__);
+	}
+#endif
+}
+
+void RMFQAMSrcImpl::getSectionData(uint32_t *filterId, std::vector<uint8_t>& buf, uint32_t* length)
+{
+	*filterId = 0;
+	*length = 0;
+	uint32_t fId = 0;
+	uint8_t *data = pInbandSI->get_Section(length, fId);
+	if (data)
+	{
+		buf.resize(*length);
+		if(buf.size() != *length)
+		{
+			RDK_LOG( RDK_LOG_ERROR, "LOG.RDK.QAMSRC", "%s - getSectionData failed - Not able to resize the buffer.\n", __FUNCTION__);
+			*length = 0;
+			buf.clear();
+			free(data);
+			return;
+		}
+		buf.assign(data, data+*length);
+		*filterId = fId;
+		free(data);
+	}
 }
 
 void RMFQAMSrcImpl::updateOutputPMT()
@@ -2557,12 +2711,14 @@ void RMFQAMSrcImpl::simonitorThread()
 						notifyStatusChange(RMF_QAMSRC_EVENT_ERRORS_ALL_CLEAR);
 					}
 				}
+				notifyStatusChange(RMF_QAMSRC_EVENT_PAT_UPDATE);
 				break;
 
 			case RMF_SI_EVENT_IB_PMT_UPDATE:
 				RDK_LOG( RDK_LOG_INFO, "LOG.RDK.QAMSRC", "PMT update event\n");
 				processProgramInfo();
 				m_si_error = 0;
+				notifyStatusChange(RMF_QAMSRC_EVENT_PMT_UPDATE);
 				break;
 
 			case RMF_SI_EVENT_SI_NOT_AVAILABLE_YET:
@@ -2581,13 +2737,15 @@ void RMFQAMSrcImpl::simonitorThread()
 					"%s: PAT/PMT timeouts are now possible.\n", __FUNCTION__);
 				pipelineIsPaused = FALSE;
 				break;
-#ifdef CAMGR_PRESENT
+#if defined(CAMGR_PRESENT) || defined(USE_EXTERNAL_CAS)
 			case RMF_SI_EVENT_IB_CAT_ACQUIRED:
 				RDK_LOG( RDK_LOG_INFO, "LOG.RDK.QAMSRC", "CAT ACQUIRED event. Source ID: %s\n", saved_uri.c_str());
 
 				pmtEventSent = TRUE;
-
+				notifyStatusChange( RMF_QAMSRC_EVENT_CAT_ACQUIRED);
+#ifdef CAMGR_PRESENT
 				processCatInfo();
+#endif
 				m_si_error = 0;
 				break;
 
@@ -2595,8 +2753,10 @@ void RMFQAMSrcImpl::simonitorThread()
 				RDK_LOG( RDK_LOG_INFO, "LOG.RDK.QAMSRC", "CAT UPDATED event. Source ID: %s\n", saved_uri.c_str());
 
 				pmtEventSent = TRUE;
-
+				notifyStatusChange( RMF_QAMSRC_EVENT_CAT_UPDATE);
+#ifdef CAMGR_PRESENT
 				processCatInfo();
+#endif
 				m_si_error = 0;
 				break;
 #endif
@@ -2682,6 +2842,12 @@ void RMFQAMSrcImpl::simonitorThread()
 					notifySection(data, data_size);
 					free(data);
 				}
+				break;
+			}
+			case RMF_SI_EVENT_IB_SECTION_ACQUIRED:
+			{
+				RDK_LOG( RDK_LOG_DEBUG, "LOG.RDK.QAMSRC", "RMF_SI_EVENT_IB_SECTION_ACQUIRED Recieved - %d, filterId =  \n",event_type, eventData.data_extension);
+				notifyStatusChange(RMF_QAMSRC_EVENT_SECTION_ACQUIRED);
 				break;
 			}
 			default:
@@ -4227,3 +4393,57 @@ RMFResult RMFQAMSrcImpl::getStatus(qamsrc_status_t &status)
 	return RMF_RESULT_SUCCESS;
 }
 
+bool RMFQAMSrcImpl::getAudioPidFromPMT(uint32_t *pid, const std::string& audioLang)
+{
+        RDK_LOG( RDK_LOG_INFO,"LOG.RDK.QAMSRC", "Enter %s():%d \n" , __FUNCTION__, __LINE__);
+       rmf_Error ret;
+       *pid = -1;
+        rmf_SiElementaryStreamList *pESList;
+        rmf_SiMpeg2DescriptorList *pMPEGDescList;
+
+        ret = pInbandSI->GetDescriptors(&pESList, &pMPEGDescList);
+       if(RMF_SUCCESS != ret )
+       {
+           RDK_LOG( RDK_LOG_ERROR,"LOG.RDK.QAMSRC", "getAudioPidFromPMT - return false");
+           return false;
+       }
+       while(NULL != pESList)
+        {
+            if(isAudioStream(pESList->elementary_stream_type))
+            {
+               RDK_LOG( RDK_LOG_INFO,"LOG.RDK.QAMSRC", "getAudioPidFromPMT - pid - %p, associated_language - %s, pESList->elementary_stream_type - 0x%2X, currentLang - %s\n",pESList->elementary_PID,pESList->associated_language, pESList->elementary_stream_type, audioLang.c_str());
+               if(audioLang.empty())
+               {
+                   *pid = pESList->elementary_PID;
+                   RDK_LOG( RDK_LOG_INFO,"LOG.RDK.QAMSRC", "getAudioPidFromPMT audioLang-empty returning first pid - %p\n", pESList->elementary_PID);
+                   return true;
+               }
+               if (strcasecmp(audioLang.c_str(), pESList->associated_language) == 0)
+                {
+                    *pid = pESList->elementary_PID;
+                   RDK_LOG( RDK_LOG_INFO,"LOG.RDK.QAMSRC", "getAudioPidFromPMT return pESList->elementary_PID - %p\n", pESList->elementary_PID);
+                   return true;
+                }
+            }
+            pESList = pESList->next;
+        }
+       return false;
+}
+
+bool RMFQAMSrcImpl::isAudioStream(rmf_SiElemStreamType es_type)
+{
+        RDK_LOG( RDK_LOG_INFO,"LOG.RDK.QAMSRC", "Enter %s():%d \n" , __FUNCTION__, __LINE__);
+        if ((es_type == 0x03)   /* MPEG1 Audio */ ||
+        (es_type == 0x04)   /* MPEG2 Audio */ ||
+        (es_type == 0x0f)   /* AAC Audio   */ ||
+        (es_type == 0x81)   /* AC3 Audio   */ ||
+        (es_type == 0x87)   /* EAC3 Audio  */ ||
+        (es_type == 0x8A)   /* DTS Audio   */ )
+        {
+            RDK_LOG( RDK_LOG_INFO,"LOG.RDK.QAMSRC", "The stream_type is defined to 0x%2X which is audio type that this STB supports\n", es_type);
+            return TRUE;
+        }
+
+       /* This will be executed only if it is not a audio type */
+       return FALSE;
+}

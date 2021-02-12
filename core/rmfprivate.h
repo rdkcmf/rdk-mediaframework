@@ -89,6 +89,16 @@ public:
     unsigned int getSinkCount(void);
     void notifyBusMessagingEnded(void);
 
+    virtual void getPATBuffer(std::vector<uint8_t>& buf, uint32_t* length);
+    virtual void getPMTBuffer(std::vector<uint8_t>& buf, uint32_t* length);
+    virtual void getCATBuffer(std::vector<uint8_t>& buf, uint32_t* length);
+    virtual bool getAudioPidFromPMT(uint32_t *pid, const std::string& currentLang);
+    virtual void setFilter(uint16_t pid, char* filterParam, uint32_t *pFilterId);
+    virtual void getSectionData(uint32_t *filterId, std::vector<uint8_t>& buf, uint32_t* length);
+    virtual void releaseFilter(uint32_t filterId);
+    virtual void resumeFilter(uint32_t filterId);
+    virtual void pauseFilter(uint32_t filterId);
+
 protected:
     RMFResult setState(GstState state);
     RMFResult flushPipeline (void);

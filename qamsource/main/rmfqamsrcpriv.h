@@ -175,6 +175,15 @@ class RMFQAMSrcImpl : /*public QAMThread ,*/ public RMFMediaSourcePrivate
 		gboolean syncLossTimerCallback();
 		RMFResult getStatus(qamsrc_status_t &status);
 		RMFResult enableTdtTot(bool enable);
+		void getPATBuffer(std::vector<uint8_t>& buf, uint32_t* length);
+		void getPMTBuffer(std::vector<uint8_t>& buf, uint32_t* length);
+		void getCATBuffer(std::vector<uint8_t>& buf, uint32_t* length);
+		bool getAudioPidFromPMT(uint32_t *pid, const std::string& audioLang);
+		void setFilter(uint16_t pid, char* filterParam, uint32_t *pFilterId);
+		void getSectionData(uint32_t *filterId, std::vector<uint8_t>& buf, uint32_t* length);
+		void releaseFilter(uint32_t filterId);
+                void resumeFilter(uint32_t filterId);
+                void pauseFilter(uint32_t filterId);
 	private:
 		/**************  Private functions ****************/
 		RMFResult populateBin(GstElement* bin);
@@ -187,6 +196,7 @@ class RMFQAMSrcImpl : /*public QAMThread ,*/ public RMFMediaSourcePrivate
 		const char* getErrorString (RMFResult errorCode);
 		void notifySIMonitorThread(uint32_t event_type);
 		void updateOutputPMT();
+		bool isAudioStream(rmf_SiElemStreamType es_type);
 
 		/**************  Private Variables ****************/
 		rmf_ProgramInfo_t pInfo;

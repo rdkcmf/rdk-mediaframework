@@ -525,6 +525,17 @@ void rmf_InbSiMgr::PsiMonitor()
                 //m_filter_list.remove(*pFilterId);
                 rmf_osal_condSet(g_inbsi_pat_cond);
             }
+#ifdef USE_EXTERNAL_CAS
+           if(getOneShotMode(filterId))
+           {
+                RDK_LOG(RDK_LOG_INFO, "LOG.RDK.INBSI", "OneShotMode - True<%s: %s> - filterId = %d\n",
+            PSIMODULE, __FUNCTION__, filterId);
+		if(m_pInbSectionFilter)
+		{
+                    m_pInbSectionFilter->pause(filterId);
+		}
+           }
+#endif
         }
 
         rmf_osal_event_delete(eventHandle);
@@ -591,6 +602,90 @@ rmf_Error rmf_InbSiMgr::parse_TOT(uint32_t section_size, uint8_t *section_data)
     rmf_osal_mutexRelease(m_mediainfo_mutex);
     NotifyTableChanged(TABLE_TYPE_TOT, RMF_SI_CHANGE_TYPE_MODIFY, 0);
   }
+}
+
+rmf_Error rmf_InbSiMgr::parse_and_update_section(uint32_t section_size, uint8_t *section_data, uint32_t filterId)
+{
+    rmf_Error ret = RMF_INBSI_NOT_FOUND;
+
+    RDK_LOG(RDK_LOG_DEBUG, "LOG.RDK.INBSI", "Taking section data mutex for filter id %u\n", filterId);
+    rmf_osal_mutexAcquire(m_mediainfo_mutex);
+    std::map<uint32_t, SectionFilterInfo*>::iterator filterIt = m_section_filter_list.find(filterId);
+    if(filterIt == m_section_filter_list.end())
+    {
+        RDK_LOG(RDK_LOG_INFO, "LOG.RDK.INBSI", "No filter found for filter id %u\n", filterId);
+        rmf_osal_mutexRelease(m_mediainfo_mutex);
+        return ret;
+    }
+
+    pthread_mutex_lock( &filterIt->second->m_Mutex);
+    if(filterIt->second->m_getNewECM)
+    {
+        // Save the section_data
+        if (section_size <= RMF_SI_SECTION_MAX_SIZE)
+        {
+            RDK_LOG(RDK_LOG_INFO, "LOG.RDK.INBSI", "Saving section data for filter id %u\n", filterId);
+            memcpy(filterIt->second->m_data, section_data, section_size);
+            filterIt->second->m_data_length = section_size;
+            filterIt->second->m_newEcmData = true;
+            filterIt->second->m_getNewECM = false;
+        }
+        else
+        {
+            RDK_LOG(RDK_LOG_ERROR, "LOG.RDK.INBSI", "Section size exceeds maximum section size %u, cannot save section data for filter id %u\n", RMF_SI_SECTION_MAX_SIZE, filterId);
+        }
+    }
+    RDK_LOG(RDK_LOG_DEBUG, "LOG.RDK.INBSI", "Releasing section data mutex for filter id %u\n", filterId);
+    pthread_mutex_unlock( &filterIt->second->m_Mutex);
+
+    rmf_osal_mutexRelease(m_mediainfo_mutex);
+
+    NotifyTableChanged(TABLE_TYPE_SECTION, RMF_SI_CHANGE_TYPE_ADD, filterId);
+    ret = RMF_INBSI_SUCCESS;
+    return ret;
+}
+
+uint8_t* rmf_InbSiMgr::get_Section(uint32_t *size, uint32_t& filterId)
+{
+    uint8_t* res = NULL;
+    RDK_LOG(RDK_LOG_DEBUG, "LOG.RDK.INBSI", "Get the section data\n");
+
+    rmf_osal_mutexAcquire(m_mediainfo_mutex);
+
+    for (std::map<uint32_t, SectionFilterInfo*>::iterator filterIt = m_section_filter_list.begin(); filterIt != m_section_filter_list.end(); ++filterIt)
+    {
+        RDK_LOG(RDK_LOG_DEBUG, "LOG.RDK.INBSI", "Filter id = %d\n", filterIt->first);
+        pthread_mutex_lock( &filterIt->second->m_Mutex);
+        if(filterIt->second->m_newEcmData)
+        {
+            filterId = filterIt->first;
+            RDK_LOG(RDK_LOG_DEBUG, "LOG.RDK.INBSI", "Taking ECM data mutex for filter id %u\n", filterId);
+            if (filterIt->second->m_data_length <= RMF_SI_SECTION_MAX_SIZE)
+            {
+                RDK_LOG(RDK_LOG_INFO, "LOG.RDK.INBSI", "Getting section data for filter id %u\n", filterId);
+                res = (uint8_t*) malloc(filterIt->second->m_data_length);
+                if (res) {
+                memcpy(res, filterIt->second->m_data, filterIt->second->m_data_length);
+                *size = filterIt->second->m_data_length;
+                }
+                filterIt->second->m_newEcmData = false;
+                filterIt->second->m_getNewECM = true;
+            }
+            else
+            {
+                RDK_LOG(RDK_LOG_ERROR, "LOG.RDK.INBSI", "Section size exceeds maximum section size %u, cannot save section data for filter id %u\n", RMF_SI_SECTION_MAX_SIZE, filterId);
+            }
+        }
+        RDK_LOG(RDK_LOG_DEBUG, "LOG.RDK.INBSI", "Releasing section data mutex for filter id %u\n", filterId);
+        pthread_mutex_unlock( &filterIt->second->m_Mutex);
+        if(res)
+        {
+            break;
+        }
+    }
+
+    rmf_osal_mutexRelease(m_mediainfo_mutex);
+    return res;
 }
 
 char* rmf_InbSiMgr::get_TDT(int *size) 
@@ -683,6 +778,13 @@ void rmf_InbSiMgr::process_section_from_filter(uint32_t filterId)
                 parse_TOT(sectionBufferSize, sectionBuffer);
                 break;
             default:
+                RDK_LOG(RDK_LOG_TRACE1, "LOG.RDK.INBSI", "<%s: %s> - Processing private section with table id: %d, received for section filter id: %d\n",
+                        PSIMODULE, __FUNCTION__, sectionBuffer[0], filterId);
+                /* The table id matches the Private Section for this filter */
+                if (sectionBuffer[0])
+                {
+                    parse_and_update_section(sectionBufferSize, sectionBuffer, filterId);
+                }
                 break;
         }
     }
@@ -1155,7 +1257,24 @@ PARSING_DONE:
             }
         }
 #endif
-
+#ifdef QAMSRC_CATBUFFER_PROPERTY
+        if ( section_size <= RMF_SI_SECTION_MAX_SIZE )
+        {
+            memcpy (catBuf, section_data, section_size);
+            catBufLen = section_size;
+            RDK_LOG(RDK_LOG_TRACE1,
+                "LOG.RDK.INBSI",
+                "<%s: %s> - copied section into catBuf, section_size ( %d)\n",
+                PSIMODULE, __FUNCTION__, catBufLen);
+        }
+        else
+        {
+            RDK_LOG(RDK_LOG_ERROR,
+                "LOG.RDK.INBSI",
+                "<%s: %s> -section_size ( %d) greater than max size\n",
+                PSIMODULE, __FUNCTION__, section_size);
+        }
+#endif
 #ifdef ENABLE_INB_SI_CACHE
           m_pSiCache->ReleaseWriteLock();
 #endif
@@ -1660,7 +1779,22 @@ PARSING_DONE:
             }
         }
 #endif
-
+        RDK_LOG(RDK_LOG_TRACE1, "LOG.RDK.INBSI", "<%s: %s> -section_size ( %d) \n",
+                PSIMODULE, __FUNCTION__, section_size);
+#ifdef QAMSRC_PATBUFFER_PROPERTY
+        if ( section_size <= RMF_SI_SECTION_MAX_SIZE )
+        {
+            memcpy (patBuf, section_data, section_size);
+            patBufLen = section_size;
+        }
+        else
+        {
+            RDK_LOG(RDK_LOG_ERROR,
+                "LOG.RDK.INBSI",
+                "<%s: %s> -section_size ( %d) greater than max size\n",
+                PSIMODULE, __FUNCTION__, section_size);
+        }
+#endif
         /*
          * Reset PMT status to 'NOT_AVAILABLE' for all programs on transport stream
          * not signaled in the newly acquired PAT
@@ -2464,6 +2598,11 @@ rmf_Error rmf_InbSiMgr::parse_and_update_PMT(uint32_t section_size, uint8_t *sec
                 {
                     memcpy (pmtBuf, section_data, section_size);
                     pmtBufLen = section_size;
+                    RDK_LOG(RDK_LOG_TRACE1,
+                        "LOG.RDK.INBSI",
+                        "<%s: %s> - copied section into pmtBuf, section_size ( %d)\n",
+                        PSIMODULE, __FUNCTION__, pmtBufLen);
+
                 }
                 else
                 {
@@ -3270,6 +3409,15 @@ rmf_Error rmf_InbSiMgr::NotifyTableChanged(rmf_psi_table_type_e table_type,
         event = RMF_SI_EVENT_IB_TOT_ACQUIRED;
         break;
     }
+    case TABLE_TYPE_SECTION:
+    {
+        event = RMF_SI_EVENT_IB_SECTION_ACQUIRED;
+        optionalEventData3 = optional_data;
+        RDK_LOG(RDK_LOG_DEBUG, "LOG.RDK.INBSI",
+                        "<%s: %s> Sending SECTION_ACQUIRED event, optionalEventData3 = %d\n", PSIMODULE, __FUNCTION__, optionalEventData3);
+
+        break;
+    }
     case TABLE_TYPE_PAT:
     {
 #ifdef ENABLE_INB_SI_CACHE
@@ -3599,6 +3747,143 @@ rmf_Error rmf_InbSiMgr::dispatch_event(uint32_t event, uint32_t optionalEventDat
     return RMF_SUCCESS;	
 }
 
+rmf_Error rmf_InbSiMgr::setFilter(uint16_t pid, char* filterParam, uint32_t *pFilterId)
+{
+    RDK_LOG(RDK_LOG_INFO, "LOG.RDK.INBSI", "%s - In rmf_InbSiMgr, pid = %d\n",  __FUNCTION__, pid);
+    rmf_Error ret;
+    rmf_FilterParam* param = (rmf_FilterParam *)filterParam;
+    RDK_LOG(RDK_LOG_INFO, "LOG.RDK.INBSI", "%s - In rmf_InbSiMgr, pos size = %d, neg size = %d\n",  __FUNCTION__, param->pos_size, param->neg_size);
+
+	rmf_FilterSpec filterSpec;
+	filterSpec.pos.length = param->pos_size;
+	filterSpec.neg.length = param->neg_size;
+    RDK_LOG(RDK_LOG_INFO, "LOG.RDK.INBSI", "%s - In rmf_InbSiMgr, Copy started\n",  __FUNCTION__);
+	if (filterSpec.pos.length)
+	{
+		filterSpec.pos.vals = (uint8_t *) malloc(filterSpec.pos.length);
+		filterSpec.pos.mask = (uint8_t *) malloc(filterSpec.pos.length);
+		memcpy(filterSpec.pos.vals, param->pos_value, param->pos_size);
+		memcpy(filterSpec.pos.mask, param->pos_mask, param->pos_size);
+	}
+	if (filterSpec.neg.length)
+	{
+		filterSpec.neg.vals = (uint8_t *) malloc(filterSpec.neg.length);
+		filterSpec.neg.mask = (uint8_t *) malloc(filterSpec.neg.length);
+		memcpy(filterSpec.neg.vals, param->neg_value, param->neg_size);
+		memcpy(filterSpec.neg.mask, param->neg_mask, param->neg_size);
+	}
+#ifdef USE_EXTERNAL_CAS
+    filterSpec.disableCRC = param->disableCRC;
+    filterSpec.noPaddingBytes = param->noPaddingBytes;
+#endif
+
+    RDK_LOG(RDK_LOG_INFO, "LOG.RDK.INBSI", "%s - In rmf_InbSiMgr, Going to set the filter\n",  __FUNCTION__);
+    /*
+     ** Acquire Mutex
+     */
+    rmf_osal_mutexAcquire(g_sitp_psi_mutex);
+
+
+    ret = m_pInbSectionFilter->SetFilter(pid, &filterSpec,
+                                        m_FilterQueueId,
+                                        RMF_PSI_FILTER_PRIORITY_INITIAL_CAT,
+                                        0,
+                                        0,
+                                        pFilterId);
+    if(ret == RMF_INBSI_SUCCESS)
+    {
+        RDK_LOG(RDK_LOG_INFO, "LOG.RDK.INBSI", "%s - In rmf_InbSiMgr, Successfully set the filter\n",  __FUNCTION__);
+        rmf_FilterInfo *pFilterInfo = NULL;
+        if (rmf_osal_memAllocP(RMF_OSAL_MEM_SI_INB, sizeof(rmf_FilterInfo),
+                    (void **) &pFilterInfo) != RMF_INBSI_SUCCESS)
+        {
+            ret = RMF_INBSI_OUT_OF_MEM;
+        }
+        else
+        {
+            memset(pFilterInfo, 0x0, sizeof(rmf_FilterInfo));
+
+            pFilterInfo->pid = pid;
+            pFilterInfo->filterId = *pFilterId;
+
+#ifdef USE_EXTERNAL_CAS
+            pFilterInfo->oneShotMode = param->mode;
+#endif
+            m_filter_list.push_back(pFilterInfo);
+
+            std::map<uint32_t,SectionFilterInfo*>::iterator it = m_section_filter_list.begin();
+            m_section_filter_list.insert(it, std::pair<uint32_t,SectionFilterInfo*>(*pFilterId,new SectionFilterInfo(pid, 0, 0)));
+        }
+    }
+    else
+    {
+        RDK_LOG(RDK_LOG_ERROR, "LOG.RDK.INBSI",
+                "<%s: %s> - SetFilter Failed with error: %d\n",
+                PSIMODULE, __FUNCTION__, ret);
+    }
+
+    if(filterSpec.pos.vals) {
+        free(filterSpec.pos.vals);
+        filterSpec.pos.vals = NULL;
+    }
+    if(filterSpec.pos.mask) {
+        free(filterSpec.pos.mask);
+        filterSpec.pos.mask = NULL;
+    }
+    if(filterSpec.neg.vals) {
+        free(filterSpec.neg.vals);
+        filterSpec.neg.vals = NULL;
+    }
+    if(filterSpec.neg.mask) {
+        free(filterSpec.neg.mask);
+        filterSpec.neg.mask = NULL;
+    }
+
+    /*
+     ** Release Mutex
+     */
+    rmf_osal_mutexRelease(g_sitp_psi_mutex);
+    return ret;
+}
+
+rmf_Error rmf_InbSiMgr::releaseFilter(uint32_t filterId)
+{
+    /*
+     ** Acquire Mutex
+     */
+    rmf_osal_mutexAcquire(g_sitp_psi_mutex);
+
+    list<rmf_FilterInfo*>::iterator filter;
+
+    for(filter = m_filter_list.begin();filter != m_filter_list.end();filter++)
+    {
+        if ((*filter)->filterId == filterId)
+        {
+            RDK_LOG( RDK_LOG_TRACE1, "LOG.RDK.INBSI",  "%s: Releasing active filter = %d\n",
+                __FUNCTION__, (*filter)->filterId);
+	    if(!m_pInbSectionFilter)
+	    {
+		RDK_LOG( RDK_LOG_INFO, "LOG.RDK.INBSI",  "%s: m_pInbSectionFilter NULL \n", __FUNCTION__);
+		return RMF_SECTFLT_Error;
+	    }
+
+            m_pInbSectionFilter->ReleaseFilter((*filter)->filterId);
+
+            rmf_FilterInfo *pFilterListObject = *filter;
+            filter = m_filter_list.erase(filter);
+            rmf_osal_memFreeP(RMF_OSAL_MEM_SI_INB, pFilterListObject);
+            //TODO: Release the section if any in the section list for the corresponding filter
+            break;
+        }
+    }
+
+    /*
+     ** Release Mutex
+     */
+    rmf_osal_mutexRelease(g_sitp_psi_mutex);
+
+}
+
 rmf_Error rmf_InbSiMgr::set_filter(rmf_PsiParam *psiParam, uint32_t *pFilterId)
 {
     //rmf_Error retCode = RMF_INBSI_SUCCESS;
@@ -3623,6 +3908,10 @@ rmf_Error rmf_InbSiMgr::set_filter(rmf_PsiParam *psiParam, uint32_t *pFilterId)
     filterSpec.pos.length = 6;
     filterSpec.neg.mask = ver_mask;
     filterSpec.neg.vals = ver_val;
+#ifdef USE_EXTERNAL_CAS
+    filterSpec.disableCRC = false;
+    filterSpec.noPaddingBytes = false;
+#endif
 
     switch (psiParam->table_type)
     {
@@ -3697,6 +3986,12 @@ rmf_Error rmf_InbSiMgr::set_filter(rmf_PsiParam *psiParam, uint32_t *pFilterId)
                 PSIMODULE, __FUNCTION__, psiParam->version_number);
     }
 
+    if(!m_pInbSectionFilter)
+    {
+        RDK_LOG( RDK_LOG_INFO, "LOG.RDK.INBSI",  "%s: m_pInbSectionFilter NULL \n", __FUNCTION__);
+        return RMF_SECTFLT_Error;
+    }
+
     ret = m_pInbSectionFilter->SetFilter(psiParam->pid, &filterSpec,
                                         m_FilterQueueId,
                                         psiParam->priority,
@@ -3717,6 +4012,9 @@ rmf_Error rmf_InbSiMgr::set_filter(rmf_PsiParam *psiParam, uint32_t *pFilterId)
 
             pFilterInfo->pid = psiParam->pid;
             pFilterInfo->filterId = *pFilterId;
+#ifdef USE_EXTERNAL_CAS
+	    pFilterInfo->oneShotMode = false;
+#endif
             if(psiParam->table_type == TABLE_TYPE_PMT)
                 pFilterInfo->program_number = psiParam->table_id_extension;
 
@@ -4616,9 +4914,10 @@ rmf_Error rmf_InbSiMgr::GetPMTBuffer(uint8_t * buf, uint32_t* length)
     rmf_Error ret = RMF_INBSI_INVALID_PARAMETER;
     if(buf == NULL)
     {
-        RDK_LOG(RDK_LOG_ERROR, "LOG.RDK.INBSI", "<%s: %s>: buf is NULL\n", 
+        RDK_LOG(RDK_LOG_INFO, "LOG.RDK.INBSI", "<%s: %s>: buf is NULL, returning the buffer length\n",
                         PSIMODULE, __FUNCTION__);          
-        return ret;
+        *length = pmtBufLen;
+        return RMF_INBSI_SUCCESS;
     }
     rmf_osal_mutexAcquire( m_mediainfo_mutex);
     if (*length >= pmtBufLen )
@@ -4631,7 +4930,60 @@ rmf_Error rmf_InbSiMgr::GetPMTBuffer(uint8_t * buf, uint32_t* length)
     return ret;
 }
 #endif
-
+#ifdef QAMSRC_PATBUFFER_PROPERTY
+rmf_Error rmf_InbSiMgr::GetPATBuffer(uint8_t * buf, uint32_t* length)
+{
+    rmf_Error ret = RMF_INBSI_INVALID_PARAMETER;
+    if(buf == NULL)
+    {
+        RDK_LOG(RDK_LOG_INFO, "LOG.RDK.INBSI", "<%s: %s>: buf is NULL, returning the buffer length\n",
+                        PSIMODULE, __FUNCTION__);
+        *length = patBufLen;
+        return RMF_INBSI_SUCCESS;
+    }
+    rmf_osal_mutexAcquire( m_mediainfo_mutex);
+    if (*length >= patBufLen )
+    {
+        memcpy(buf, patBuf, patBufLen);
+        *length = patBufLen;
+        ret = RMF_INBSI_SUCCESS;
+    }
+    else
+    {
+        RDK_LOG(RDK_LOG_ERROR, "LOG.RDK.INBSI", "<%s: %s>: GetPATBuffer is failed, lenght = %d, patBufLen = %d\n",
+                        PSIMODULE, __FUNCTION__, *length, patBufLen);
+    }
+    rmf_osal_mutexRelease( m_mediainfo_mutex);
+    return ret;
+}
+#endif
+#ifdef QAMSRC_CATBUFFER_PROPERTY
+rmf_Error rmf_InbSiMgr::GetCATBuffer(uint8_t * buf, uint32_t* length)
+{
+    rmf_Error ret = RMF_INBSI_INVALID_PARAMETER;
+    if(buf == NULL)
+    {
+        RDK_LOG(RDK_LOG_INFO, "LOG.RDK.INBSI", "<%s: %s>: buf is NULL, returning the buffer length\n",
+                        PSIMODULE, __FUNCTION__);
+        *length = catBufLen;
+        return RMF_INBSI_SUCCESS;
+    }
+    rmf_osal_mutexAcquire( m_mediainfo_mutex);
+    if (*length >= catBufLen )
+    {
+        memcpy(buf, catBuf, catBufLen);
+        *length = catBufLen;
+        ret = RMF_INBSI_SUCCESS;
+    }
+    else
+    {
+        RDK_LOG(RDK_LOG_ERROR, "LOG.RDK.INBSI", "<%s: %s>: GetCATBuffer is failed, lenght = %d, catBufLen = %d\n",
+                        PSIMODULE, __FUNCTION__, *length, catBufLen);
+    }
+    rmf_osal_mutexRelease( m_mediainfo_mutex);
+    return ret;
+}
+#endif
 /**
  * @brief This function gets CA information like ECM pid, number of elementary streams and their PID's
  * corresponding to the specified program number and CAS ID.
@@ -4872,4 +5224,60 @@ rmf_Error rmf_InbSiMgr::resume(void)
 	}
 	rmf_osal_mutexRelease(g_sitp_psi_mutex);
 	return ret;
+}
+
+#ifdef USE_EXTERNAL_CAS
+bool rmf_InbSiMgr::getOneShotMode(uint32_t filterId)
+{
+    bool one_shot = false;
+    list<rmf_FilterInfo*>::iterator filter;
+
+    RDK_LOG( RDK_LOG_DEBUG, "LOG.RDK.INBSI",  "%s: filterId = %d\n", __FUNCTION__, filterId);
+    for(filter = m_filter_list.begin();filter != m_filter_list.end();filter++)
+    {
+        if ((*filter)->filterId == filterId)
+        {
+            one_shot = (*filter)->oneShotMode;
+            RDK_LOG( RDK_LOG_DEBUG, "LOG.RDK.INBSI",  "%s: oneShotMode = %d\n", __FUNCTION__, one_shot);
+            break;
+        }
+   }
+   return one_shot;
+}
+#endif
+
+rmf_Error rmf_InbSiMgr::resumeFilter(uint32_t filterId)
+{
+    RDK_LOG( RDK_LOG_INFO, "LOG.RDK.INBSI",  "%s: Enter resumeFilter ,filterId = %d \n", __FUNCTION__, filterId);
+    if(!m_pInbSectionFilter)
+    {
+        RDK_LOG( RDK_LOG_ERROR, "LOG.RDK.INBSI",  "%s: m_pInbSectionFilter NULL \n", __FUNCTION__);
+        return RMF_SECTFLT_Error;
+    }
+    rmf_Error result;
+    rmf_Error ret = RMF_INBSI_SUCCESS;
+    result = m_pInbSectionFilter->resume(filterId);
+    if(RMF_SECTFLT_Success != result)
+    {
+        ret = result;
+    }
+    return ret;
+}
+
+rmf_Error rmf_InbSiMgr::pauseFilter(uint32_t filterId)
+{
+    RDK_LOG( RDK_LOG_INFO, "LOG.RDK.INBSI",  "%s: Enter pauseFilter ,filterId = %d \n", __FUNCTION__, filterId);
+    if(!m_pInbSectionFilter)
+    {
+        RDK_LOG( RDK_LOG_ERROR, "LOG.RDK.INBSI",  "%s: m_pInbSectionFilter NULL \n", __FUNCTION__);
+        return RMF_SECTFLT_Error;
+    }
+    rmf_Error result;
+    rmf_Error ret = RMF_INBSI_SUCCESS;
+    result = m_pInbSectionFilter->pause(filterId);
+    if(RMF_SECTFLT_Success != result)
+    {
+        ret = result;
+    }
+    return ret;
 }

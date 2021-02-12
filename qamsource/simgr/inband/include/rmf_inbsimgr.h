@@ -36,9 +36,9 @@
 #include "rmf_qamsrc_common.h"
 #include "rmf_inbsi_common.h"
 #endif
-
 #include <semaphore.h>
-
+#include <map>
+#include <vector>
 
 /**
  * @file rmf_inbsimgr.h
@@ -66,7 +66,6 @@
 
 
 using namespace std;
-
 
 /**
  * @addtogroup rmfsitablestatus
@@ -110,6 +109,8 @@ using namespace std;
 #define RMF_SI_EVENT_IB_TDT_ACQUIRED                (RMF_SI_EVENT_UNKNOWN + 22)
 #define RMF_SI_EVENT_IB_TOT_ACQUIRED                (RMF_SI_EVENT_UNKNOWN + 23)
 
+#define RMF_SI_EVENT_IB_SECTION_ACQUIRED            (RMF_SI_EVENT_UNKNOWN + 24)
+#define RMF_SI_SECTION_MAX_SIZE 				4096
 
 #define RMF_PSI_EVENT_SHUTDOWN           	    9999
 
@@ -133,6 +134,7 @@ using namespace std;
 #define RMF_SI_MAX_APIDS 	8
 #define RMF_SI_MAX_PIDS_PER_PGM 	32
 #define RMF_SI_PMT_MAX_SIZE 1024
+#define RMF_SI_SECTION_MAX_SIZE 1024
 /**
  *  Modulation modes
  */
@@ -184,6 +186,7 @@ typedef enum _rmf_psi_table_type_e
     TABLE_TYPE_CAT,
     TABLE_TYPE_TDT,
     TABLE_TYPE_TOT,
+	TABLE_TYPE_SECTION,
     TABLE_TYPE_UNKNOWN = TABLE_TYPE_NONE
 } rmf_psi_table_type_e;
 
@@ -268,6 +271,9 @@ typedef struct _rmf_FilterInfo
 	uint16_t program_number;
 	uint16_t pid;            
        uint32_t filterId;
+#ifdef USE_EXTERNAL_CAS
+        bool oneShotMode;
+#endif
 }rmf_FilterInfo;
 
 
@@ -435,6 +441,26 @@ typedef struct rmf_pmtInfo
 }rmf_pmtInfo_t;
 #endif
 
+#define FILTER_SIZE 10
+typedef struct rmf_FilterParam {
+	typedef enum {
+		SECTION_FILTER_REPEAT = 0,
+		SECTION_FILTER_ONE_SHOT
+	} FilterMode;
+	uint8_t pos_value[FILTER_SIZE];		// << The pos value to apply to the filter
+	uint8_t pos_mask[FILTER_SIZE];		// << The pos mask to apply to the filter
+	uint32_t pos_size;					// << The number of valid bytes in the above
+
+	uint8_t neg_value[FILTER_SIZE];		// << The neg value to apply to the filter
+	uint8_t neg_mask[FILTER_SIZE];		// << The neg maskto apply to the filter
+	uint32_t neg_size;					// << The number of valid bytes in the above
+#ifdef USE_EXTERNAL_CAS
+	bool disableCRC;
+	bool noPaddingBytes;
+#endif
+	FilterMode mode;
+} rmf_FilterParam ;
+
 typedef void (*rmf_section_f)(uint32_t section_size, uint8_t *section_data, void* user_data);
 
 //forward declaration
@@ -504,6 +530,15 @@ private:
 	uint8_t pmtBuf[RMF_SI_PMT_MAX_SIZE];
 	uint32_t pmtBufLen;
 #endif
+#ifdef QAMSRC_PATBUFFER_PROPERTY
+	uint8_t patBuf[RMF_SI_SECTION_MAX_SIZE];
+	uint32_t patBufLen;
+#endif
+#ifdef QAMSRC_CATBUFFER_PROPERTY
+	uint8_t catBuf[RMF_SI_SECTION_MAX_SIZE];
+	uint32_t catBufLen;
+#endif
+
 #endif
 
 	uint32_t m_freq; /**< Tuner frequency, in Hz (used to validate tuner state) */	
@@ -518,6 +553,9 @@ private:
 
 	static void PsiThreadFn(void *arg);
 	void PsiMonitor(void);
+#ifdef USE_EXTERNAL_CAS
+        bool getOneShotMode(uint32_t filterId);
+#endif
 	
 	rmf_Error parse_and_update_PAT(uint32_t section_size, uint8_t *section_data);
 	rmf_Error parse_and_update_PMT(uint32_t section_size, uint8_t *section_data);
@@ -556,6 +594,16 @@ public:
 #ifdef QAMSRC_PMTBUFFER_PROPERTY
 	rmf_Error GetPMTBuffer(uint8_t * buf, uint32_t* length);
 #endif
+#ifdef QAMSRC_PATBUFFER_PROPERTY
+	rmf_Error GetPATBuffer(uint8_t * buf, uint32_t* length);
+#endif
+#ifdef QAMSRC_CATBUFFER_PROPERTY
+	rmf_Error GetCATBuffer(uint8_t * buf, uint32_t* length);
+#endif
+	rmf_Error setFilter(uint16_t pid, char* filterParam, uint32_t *pFilterId);
+	rmf_Error releaseFilter(uint32_t filterId);
+        rmf_Error resumeFilter(uint32_t filterId);
+        rmf_Error pauseFilter(uint32_t filterId);
 
 	rmf_Error ClearProgramInfo(uint16_t program_number);
 	rmf_Error GetTSID(uint32_t* ptsid);
@@ -565,6 +613,7 @@ public:
 	virtual rmf_Error resume(void);
 	char* get_TDT(int *size);
 	char* get_TOT(int *size);
+	uint8_t* get_Section(uint32_t *size, uint32_t& filterId);
 #ifndef ENABLE_INB_SI_CACHE
 private:
 	rmf_Error SetOuterDescriptor( rmf_SiDescriptorTag tag, 
@@ -582,6 +631,30 @@ private:
 	void SetESInfoLength(uint32_t elem_pid, rmf_SiElemStreamType type, uint32_t es_info_length);
 	void configure_negative_filters(rmf_psi_table_type_e type);
 #endif
+private:
+   class SectionFilterInfo
+   {
+	public:
+		uint16_t        m_pid;
+		uint8_t         m_val;
+		uint8_t         m_mask;
+		uint8_t         m_data[RMF_SI_SECTION_MAX_SIZE];
+		uint32_t        m_data_length;
+		bool            m_getNewECM;
+		bool            m_newEcmData;
+		pthread_mutex_t m_Mutex;
+
+		SectionFilterInfo(uint16_t pid, uint8_t val, uint8_t mask):m_pid(pid), m_val(val), m_mask(mask), m_data_length(0), m_getNewECM(1), m_newEcmData(0)
+		{
+			pthread_mutex_init(&m_Mutex, NULL);
+		}
+		~SectionFilterInfo()
+		{
+			pthread_mutex_destroy(&m_Mutex);
+		}
+    };
+    std::map<uint32_t/*filterId*/, SectionFilterInfo*> m_section_filter_list;
+	rmf_Error parse_and_update_section(uint32_t section_size, uint8_t *section_data, uint32_t filterId);
 protected:
 	// Mutex for thread
 	rmf_osal_Mutex g_sitp_psi_mutex;

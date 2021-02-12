@@ -212,6 +212,14 @@ public:
     void setAudioLanguage (const char* pAudioLang);
 
 /**
+ * @brief This API is to get the audio language preference.
+ *
+ * @return  Returns preferred Audio Language.
+ */
+    const char *getPreferredAudioLanguage (void);
+
+
+/**
  * @brief This API is to set the auxiliary audio language preference.
  *
  * @param[in]  pAudioLang    Language to be set.
@@ -251,6 +259,47 @@ public:
  * @param[in]  eissStatus    Boolean value to enable/disable the filter.
  */
     void setEissFilterStatus (bool eissStatus);
+
+/**
+ * @brief This function is to set the keyslot for video decryption.
+ *
+ * @param[in]  keySlot    key slot to decrypt video content.
+ */
+    void setVideoKeySlot (const char *keySlot);
+
+/**
+ * @brief This function is to set the keyslot for audio decryption.
+ *
+ * @param[in]  keySlot    key slot to decrypt audio content.
+ */
+    void setAudioKeySlot (const char *keySlot);
+
+/**
+ * @brief This function is to delete the keyslot for video decryption.
+ *
+ */
+    void deleteVideoKeySlot (void);
+
+/**
+ * @brief This function is to delete the keyslot for audio decryption.
+ *
+ */
+    void deleteAudioKeySlot (void);
+
+
+/**
+ * @brief This function is to get the video pid.
+ *
+ * @return return the video pid value
+ */
+    int getVideoPid ();
+
+/**
+ * @brief This function is to get the audio pid.
+ *
+ * @return return the video pid value
+ */
+    int getAudioPid ();
 
 /**
  * @brief This API adds the EISS(ETV Integrated Signaling Stream) filter function.
@@ -342,6 +391,14 @@ public:
  * @param[in]  data  Data for PMT callback.
  */
     void setPmtUpdateCallback (callback_t cb, void* data);
+
+/**
+ * @brief This API registers the language change callback function.
+ *
+ * @param[in]  cb    callback function.
+ * @param[in]  data  Data for language change callback.
+ */
+    void setLanguageChangeCallback (callback_t cb, void* data);
 
 /**
  * @brief This function returns the media buffer size.

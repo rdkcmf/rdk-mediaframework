@@ -132,6 +132,11 @@
 #define RMF_QAMSRC_EVENT_ERRORS_ALL_CLEAR (RMF_QAMSRC_EVENT_BASE + 40) /**< All QAM errors have been recovered from.*/
 #define RMF_QAMSRC_EVENT_CA_SYSTEM_READY (RMF_QAMSRC_EVENT_BASE + 41) /**< CA system is ready for use.*/
 #define RMF_QAMSRC_EVENT_SPTS_OK (RMF_QAMSRC_EVENT_BASE + 42) /**< SPTS has recovered.*/ 
+#define RMF_QAMSRC_EVENT_CAT_ACQUIRED (RMF_QAMSRC_EVENT_BASE +43)     /**<  CAT acquired*/
+#define RMF_QAMSRC_EVENT_SECTION_ACQUIRED (RMF_QAMSRC_EVENT_BASE +44)     /**<  Any section acquired for the filters set*/
+#define RMF_QAMSRC_EVENT_PAT_UPDATE (RMF_QAMSRC_EVENT_BASE +45)     /**<  PAT Update*/
+#define RMF_QAMSRC_EVENT_CAT_UPDATE (RMF_QAMSRC_EVENT_BASE +46)     /**<  CAT Update*/
+#define RMF_QAMSRC_EVENT_PMT_UPDATE (RMF_QAMSRC_EVENT_BASE +47)     /**<  PMT Update*/
 
 /** @}
  * @defgroup qamsourceccistatus QAM Source CCI status values.

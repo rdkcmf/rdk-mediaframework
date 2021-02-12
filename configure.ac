@@ -75,6 +75,7 @@ CC_ENABLE=" "
 RBI_ENABLE=" "
 RBI_ENABLE_ADCACHE=" "
 ENABLE_QAM=" "
+ENABLE_EXTERNAL_CAS=" "
 ENABLE_IPPVRC=" "
 OSAL_ENABLE=" "
 ENABLE_YOCTO=" "
@@ -238,6 +239,17 @@ AC_ARG_ENABLE([qam],
     	      ],
     	      [echo "qam is disabled"])
 AM_CONDITIONAL([ENABLE_QAM],[test x$ENABLE_QAM = xtrue])
+AC_ARG_ENABLE([external-cas],
+              AS_HELP_STRING([--enable-external-cas],[enable external cas plugin (default is no)]),
+              [
+          case "${enableval}" in
+           yes) ENABLE_EXTERNAL_CAS=true PLUGIN_SRC="$PLUGIN_SRC anycas";;
+           no)  AC_MSG_ERROR([external cas plugin is disabled]) ;;
+           *) AC_MSG_ERROR([bad value ${enableval} for --enable-external-cas]) ;;
+          esac
+            ],
+            [echo "external cas is disabled"])
+AM_CONDITIONAL([ENABLE_EXTERNAL_CAS],[test x$ENABLE_EXTERNAL_CAS = xtrue])
 AC_ARG_ENABLE([emulator-qam],
               AS_HELP_STRING([--enable-emulator-qam],[enable emulator qamsrc plugin (default is no)]),
               [
@@ -464,6 +476,8 @@ AC_CONFIG_FILES([Makefile
 	 qamsource/sdv/Makefile
 	 qamsource/oobsimgrstub/Makefile
 	 qamsource/main/Makefile
+	 anycas/Makefile
+	 anycas/test/Makefile
      dumpfilesink/Makefile
      rbi/Makefile
      rbi/test/Makefile

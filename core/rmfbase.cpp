@@ -1056,6 +1056,55 @@ RMFResult RMFMediaSourcePrivate::getCCIInfo( char& cciInfo)
     return RMF_RESULT_NOT_IMPLEMENTED;
 }
 
+void RMFMediaSourcePrivate::getPATBuffer(std::vector<uint8_t>& buf, uint32_t* length)
+{
+    (void) buf;
+    *length = 0;
+}
+
+void RMFMediaSourcePrivate::getPMTBuffer(std::vector<uint8_t>& buf, uint32_t* length)
+{
+    (void) buf;
+    *length = 0;
+}
+
+void RMFMediaSourcePrivate::getCATBuffer(std::vector<uint8_t>& buf, uint32_t* length)
+{
+    (void) buf;
+    *length = 0;
+}
+
+bool RMFMediaSourcePrivate::getAudioPidFromPMT(uint32_t*, const std::string&)
+{
+}
+
+void RMFMediaSourcePrivate::setFilter(uint16_t pid, char* filterParam, uint32_t *pFilterId)
+{
+    (void) pid;
+    (void) filterParam;
+    *pFilterId = 0;
+}
+
+void RMFMediaSourcePrivate::getSectionData(uint32_t *filterId, std::vector<uint8_t>& buf, uint32_t* length)
+{
+    (void) buf;
+    *filterId = 0;
+    *length = 0;
+}
+
+void RMFMediaSourcePrivate::releaseFilter(uint32_t filterId)
+{
+    (void)filterId;
+}
+
+void RMFMediaSourcePrivate::resumeFilter(uint32_t )
+{
+}
+
+void RMFMediaSourcePrivate::pauseFilter(uint32_t )
+{
+}
+
 void RMFMediaSourcePrivate::sendCCIChangedEvent( char cciInfo )
 {
     sink_map_t::iterator it;

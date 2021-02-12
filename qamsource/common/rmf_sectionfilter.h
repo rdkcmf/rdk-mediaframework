@@ -114,7 +114,6 @@
 #define RMF_SF_INVALID_SECTION_HANDLE              (0)
 /** @} */
 
-
 /**
  * @defgroup sectionfilterdatastructures Section Filter Data Structures
  * @ingroup sectionfilter
@@ -239,6 +238,10 @@ typedef struct rmf_FilterSpec
 {
     rmf_FilterComponent pos; /**< Positive-match criteria */
     rmf_FilterComponent neg; /**< Negative-match criteria */
+#ifdef USE_EXTERNAL_CAS
+	bool disableCRC;
+	bool noPaddingBytes;
+#endif
 } rmf_FilterSpec;
 
 
@@ -272,6 +275,10 @@ typedef struct rmf_sf_SectionRequest_s
 	unsigned long long m_startTimeInms_SinceEpoch;
 	RMFQueue* m_SectionsDataQueue; 
 //	rmf_osal_eventqueue_handle_t                        sectionsDataQueue;
+#ifdef USE_EXTERNAL_CAS
+	bool disableCRC;
+	bool noPaddingBytes;
+#endif
 	void* 	pSectionFilterInfo;
 	//Sync element to avoid delte section under processing 
 	std::atomic<uint8_t> uiIsSectionUnderProcessing  = ATOMIC_VAR_INIT (0); 
@@ -340,6 +347,10 @@ protected:
 	void section_avail_cb(uint32_t filterID, rmf_Section_Data* pSectionData);
 
 	void* get_section_filter_info(uint32_t filterID);
+#ifdef USE_EXTERNAL_CAS
+	bool is_section_filter_crc_disabled(uint32_t filterID);
+	bool is_section_filter_paddingbytes_disabled(uint32_t filterID);
+#endif
 
 	virtual RMF_SECTFLT_RESULT Create(uint16_t pid, uint8_t* pos_mask, uint8_t* pos_value, 
 					uint16_t pos_length, uint8_t* neg_mask, uint8_t* neg_value, 

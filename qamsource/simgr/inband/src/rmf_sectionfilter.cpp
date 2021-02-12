@@ -319,6 +319,10 @@ rmf_Error rmf_SectionFilter::SetFilter(uint16_t pid, const rmf_FilterSpec * filt
     //pFilter_Request->requestorACT                       = act;
     pFilter_Request->priority                           = filterPriority;
     pFilter_Request->matchesRemaining           = timesToMatch;
+#ifdef USE_EXTERNAL_CAS
+    pFilter_Request->disableCRC = filterSpec->disableCRC;
+    pFilter_Request->noPaddingBytes = filterSpec->noPaddingBytes;
+#endif
     RDK_LOG(RDK_LOG_TRACE1, "LOG.RDK.FILTER","%s:: tableID: 0x%x, pFilter_Request->matchesRemaining: %d\n", __FUNCTION__, filterSpec->pos.vals[0], pFilter_Request->matchesRemaining);
 
 
@@ -1316,6 +1320,39 @@ void* rmf_SectionFilter::get_section_filter_info(uint32_t filterID)
 
     return NULL;
 }
+
+#ifdef USE_EXTERNAL_CAS
+bool rmf_SectionFilter::is_section_filter_crc_disabled(uint32_t filterID)
+{
+    bool crc_disabled = false;
+    rmf_sf_SectionRequest_t*         pFilter_Request         = NULL;
+
+    // Get the section request structure
+    pFilter_Request = (rmf_sf_SectionRequest_t*)m_sectionRequests->Lookup((rmf_SymbolMapKey)filterID);
+
+    if(pFilter_Request != NULL)
+    {
+        crc_disabled = pFilter_Request->disableCRC;
+    }
+
+    return crc_disabled;
+}
+bool rmf_SectionFilter::is_section_filter_paddingbytes_disabled(uint32_t filterID)
+{
+    bool noPaddingBytes = false;
+    rmf_sf_SectionRequest_t*         pFilter_Request         = NULL;
+
+    // Get the section request structure
+    pFilter_Request = (rmf_sf_SectionRequest_t*)m_sectionRequests->Lookup((rmf_SymbolMapKey)filterID);
+
+    if(pFilter_Request != NULL)
+    {
+        noPaddingBytes = pFilter_Request->noPaddingBytes;
+    }
+
+    return noPaddingBytes;
+}
+#endif
 
 /**
  * @brief This function is used to resume the sectionFilter with the specified filter ID.
