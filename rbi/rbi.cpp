@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #include "rdk_debug.h"
 #include "rmf_osal_socket.h"
 #include "rmf_osal_sync.h"
@@ -45,6 +46,7 @@
 #include <curl/curl.h>
 
 #include <vector>
+#include <map>
 #include <string>
 #include <fstream>
 #include <sstream>
@@ -101,6 +103,8 @@
 #define CURL_CONNECTTIMEOUT 3.5L  /**< Curl socket connection timeout */
 
 #define TS_FORMATERROR_RETRYCOUNT      3
+
+#define VIDEO_FRAME_RATE (59.94)
 
 static char curlErrorCode[CURL_ERROR_SIZE];
 static bool test_insert = false;
@@ -685,13 +689,18 @@ class RBIHTTPInsertSource : public RBIInsertSource, public RBIStreamProcessorEve
       {
          return m_streamProcessor;
       }
-      
+      virtual std::vector<int> getAdVideoExitFrameInfo()
+      {
+        return m_adVideoExitFrameInfo;
+      }
+
       void acquiredPMT( RBIStreamProcessor *sp );
       void foundFrame( RBIStreamProcessor *sp, int frameType, long long frameStartOffset, long long pts, long long pcr );
       void foundBitRate( RBIStreamProcessor *sp, int bitRate, int chunkSize );
       void insertionStatusUpdate( RBIStreamProcessor *sp, int detailCode );
-      bool getTriggerDetectedForOpportunity(void);
-   
+      bool getTriggerDetectedForOpportunity(void);  
+      int getNextAdPacketPid();
+  
    protected:
       static void onDownloadComplete(rtFileDownloadRequest* downloadRequest);
 
@@ -735,9 +744,12 @@ class RBIHTTPInsertSource : public RBIInsertSource, public RBIStreamProcessorEve
       int m_tail;
       int m_capacity;
       int m_count;
+      int m_adReadVideoFrameCnt;
       unsigned char* m_data;
 
       unsigned int m_totalRetryCount;
+
+      std::vector<int> m_adVideoExitFrameInfo;
 
       friend class RBIInsertDefinition;
       friend class RBIManager;    
@@ -748,7 +760,7 @@ RBIHTTPInsertSource::RBIHTTPInsertSource( int id, std::string uri, long long spl
      m_threadCreated(false), m_threadRunning(false), m_threadStopRequested(false), m_haveTSFormatError(0),
      m_havePMT(false), m_haveIFrame(false), m_offsetIFrame(0LL), m_lenIFrame(0), 
      m_bitRate(0), m_startPTS(-1LL),
-     m_head(0), m_tail(0), m_capacity(0), m_count(0), m_data(0), m_totalRetryCount(0)
+     m_head(0), m_tail(0), m_capacity(0), m_count(0), m_data(0), m_totalRetryCount(0), m_adReadVideoFrameCnt(0)
 {
    pthread_mutex_init( &m_mutex, 0 );
    m_streamProcessor.setTriggerEnable( false );
@@ -858,7 +870,7 @@ void RBIHTTPInsertSource::close()
    {
       free( m_data );
       m_data= 0;
-      m_head= m_tail= m_capacity= m_count= 0;
+      m_head= m_tail= m_capacity= m_count= m_adReadVideoFrameCnt = 0;
       m_totalRetryCount= 0;
    }
 
@@ -883,7 +895,7 @@ bool RBIHTTPInsertSource::dataReady()
    if ( m_havePMT && m_haveIFrame && (m_bitRate != 0) && (m_count > 100*1024) )
    {
       ready= true;
-   }   
+   }
    pthread_mutex_unlock( &m_mutex );
 
    return ready;
@@ -1560,7 +1572,23 @@ bool RBIHTTPInsertSource::getTriggerDetectedForOpportunity(void)
 
 void RBIHTTPInsertSource::foundFrame( RBIStreamProcessor *sp, int frameType, long long frameStartOffset, long long pts, long long pcr )
 {
-   DEBUG( "RBIHTTPInsertSource::foundFrame: sp %p type %d offset %llx pts %llx pcr %llx", sp, frameType, frameStartOffset, pts, pcr);
+    
+    m_adReadVideoFrameCnt++;
+    int frameInfoSize = m_adVideoExitFrameInfo.size();
+    if( frameInfoSize != 0 )
+    {
+        m_adVideoExitFrameInfo.pop_back();       
+    }
+    if(frameType == I_FRAME || frameType == P_FRAME)
+    {        
+        // Adding the previous frame number in decode order, the frame that we can exit Ad from
+        m_adVideoExitFrameInfo.push_back(m_adReadVideoFrameCnt-1);        
+    }    
+    // for last video frame in the ad
+    m_adVideoExitFrameInfo.push_back(m_adReadVideoFrameCnt);
+    
+    DEBUG("RBIHTTPInsertSource::foundFrame: Ad read frame Count %d sp %p type %d offset %llx pts %llx pcr %llx", m_adReadVideoFrameCnt, sp, frameType, frameStartOffset, pts, pcr);
+  
    if ( frameType == I_FRAME )
    {
       if ( !m_haveIFrame )
@@ -1662,6 +1690,41 @@ void RBIHTTPInsertSource::foundBitRate( RBIStreamProcessor *sp, int bitRate, int
       m_bitRate= bitRate;
    }
    pthread_mutex_unlock( &m_mutex );
+}
+
+int RBIHTTPInsertSource::getNextAdPacketPid() {
+    int pid = 0x1FFF;
+    int txPktBytesCnt = 188;
+    unsigned char packet[txPktBytesCnt];
+    int tail_copy = m_tail;
+    int offset = 0;
+    
+    while (txPktBytesCnt > 0)
+    {
+        int copylen = (tail_copy < m_head) ? m_head - tail_copy : m_capacity - tail_copy;
+        if (copylen > 0)
+        {
+            if (copylen >= txPktBytesCnt) {
+                copylen = txPktBytesCnt;
+            }
+            memcpy(&packet[offset], &m_data[tail_copy], copylen);
+            offset += copylen;
+            txPktBytesCnt -= copylen;
+            tail_copy += copylen;
+             if ( tail_copy >= m_capacity ) tail_copy= 0;
+        }
+        else
+        {
+           break;
+        }        
+    }
+
+    if(txPktBytesCnt == 0)
+    {
+        pid = (((packet[1] << 8) | packet[2]) & 0x1FFF);            
+    }
+
+    return pid;
 }
 
 RBIInsertDefinition::RBIInsertDefinition( int triggerId, bool replace, int duration, const char *assetID, const char *providerID, const char *uri, const char *trackingIdString, bool validSpot, int spotDetailCode )
@@ -1819,7 +1882,7 @@ RBIManager* RBIManager::getInstance()
 
 RBIManager::RBIManager()
   : m_definitionRequestTimeout(RBI_DEFAULT_DEFINITION_REQUEST_TIMEOUT), m_H264Enabled(false), m_captureEnabled(false), 
-    m_audioReplicationEnabled(false), m_PCRoffsetThresholdEnabled(false),m_spliceOffset(0), m_spliceTimeout(RBI_DEFAULT_DEFINITION_SPLICE_TIMEOUT),
+    m_audioReplicationEnabled(false), m_spliceOffset(0), m_spliceTimeout(RBI_DEFAULT_DEFINITION_SPLICE_TIMEOUT),
     m_marginOfError(RBI_DEFAULT_ASSET_DURATION_OFFSET), m_bufferSize(RBI_DEFAULT_DEFINITION_BUFFER_SIZE), m_retryCount(RBI_DEFAULT_PSN_RETRY_COUNT), 
     m_progammerEnablementEnabled(false), m_haveDeviceId(false), m_timeZoneMinutesWest(0), m_STTAcquired(false), m_nextSessionNumber(1)
 {
@@ -2502,7 +2565,7 @@ void RBIManager::printTunerActivityStatusMap(void)
       receiverIdList = srcUriMap_iter->second;
 
       for(ReceiverList::iterator receiverIdListIter = receiverIdList.begin(); receiverIdListIter != receiverIdList.end(); ++receiverIdListIter)
-                  {
+      {
          if((*receiverIdListIter).liveDVRState.DVR)
          {
             switch((*receiverIdListIter).liveDVRState.Live_TSB)
@@ -2861,7 +2924,7 @@ bool RBIContext::processPackets( unsigned char* packets, int* size )
       m_tuneInEmitted= true;
    }
  
-   updateInsertionState();  
+   updateInsertionState(-1);  
 
    /*
     * Update private data monitor if required
@@ -2960,7 +3023,7 @@ void RBIContext::setTriggerDetectedForOpportunity(bool bTriggerDetectedForOpport
    INFO("setTriggerDetectedForOpportunity %d RBIContext (%p)", m_triggerDetectedForOpportunity, this);
 }
 
-void RBIContext::updateInsertionState()
+void RBIContext::updateInsertionState(long long startPTS)
 {
    if ( m_insertPending )
    {
@@ -2972,6 +3035,7 @@ void RBIContext::updateInsertionState()
          m_detailCode = RBI_DetailCode_responseTimeout;
          sendInsertionStatusEvent( RBI_SpotEvent_insertionFailed );
 
+         /* Discard any existing definition set (DELIA-18339) */
          RBIManager::getInstance()->unregisterInsertDefinitionSet( m_sessionIdStr );
          this->setTriggerDetectedForOpportunity(false);
       }
@@ -3002,9 +3066,17 @@ void RBIContext::updateInsertionState()
                if ( m_dfnCurrent )
                {
                   const SpotTimeInfo *ti= m_dfnSet->getSpotTime( m_spotIndex );
-                  m_utcTimeSpot= ti->utcTimeStart;
-                  m_prefetchPTS= ((ti->startPTS - 4000*90LL)&MAX_90K);
-                  m_startPTS= ti->startPTS;
+                  m_utcTimeSpot= ti->utcTimeStart;                  
+                    if(startPTS != -1)
+                    {
+                        m_startPTS= startPTS; 
+                        INFO( "Adjusting Out point PTS for this spot to match that in the stream, estimated PTS %llX Adjusted PTS %llX ", ti->startPTS, m_startPTS );
+                    }
+                    else
+                    {
+                        m_startPTS= ti->startPTS;
+                    }
+                  m_prefetchPTS= ((m_startPTS - 4000*90LL)&MAX_90K);
                   m_endPTS= ((m_startPTS + (m_dfnCurrent->getDuration()*90LL))&MAX_90K);
                   m_spotIsReplace= m_dfnCurrent->isReplace();
                   m_primaryStreamProcessor->setBackToBack(false);
@@ -3144,19 +3216,20 @@ void RBIContext::updateInsertionState()
          if ( m_insertSrc )
          {
             if ( m_insertSrc->dataReady() )
-            {               
+            {
                m_insertPending= false;
-               if ( m_primaryStreamProcessor->startInsertion( m_insertSrc, m_startPTS, m_endPTS ) )
-               {
-                  m_inserting= true;
-                  test_insert= true;
-                  INFO("test_insert is set to true %d", __LINE__ );
-               }
-               else
-               {
-                  rbm->releaseInsertSource(m_insertSrc);
-                  m_insertSrc= 0;
-               }
+
+                if ( m_primaryStreamProcessor->startInsertion( m_insertSrc, m_startPTS, m_endPTS ) )
+                {
+                   m_inserting= true;
+                   test_insert= true;
+                   INFO("test_insert is set to true %d", __LINE__ );
+                }
+                else
+                {
+                   rbm->releaseInsertSource(m_insertSrc);
+                   m_insertSrc= 0;
+                }
             }
 #ifdef ENABLE_HTTP_MISSED_PREFETCH
             else
@@ -3356,7 +3429,7 @@ void RBIContext::insertionStopped( RBIStreamProcessor *sp )
       if ( m_spotIndex < m_spotCount )
       {
          m_insertPending= true;
-         updateInsertionState();
+         updateInsertionState(m_primaryStreamProcessor->getSpliceUpdatedOutPTS());
       }
       else
       {
@@ -3599,7 +3672,7 @@ void RBIContext::sendInsertionStatusEvent( int event )
    long long insertionEndTime = m_primaryStreamProcessor->getInsertionEndTime();
    if ( event == RBI_SpotEvent_insertionStopped || (event == RBI_SpotEvent_endAll))
    {
-      status.utcTimeEvent= m_utcTimeSpot + (long long)((UTCMILLIS(tv)-m_utcTimeSpot) * m_primaryStreamProcessor->getRetimestampRate());
+      status.utcTimeEvent= m_utcTimeSpot + (long long)(UTCMILLIS(tv)-m_utcTimeSpot);
       if ( m_dfnCurrent )
           status.spotDuration = m_dfnCurrent->getDuration();
 
@@ -3613,9 +3686,8 @@ void RBIContext::sendInsertionStatusEvent( int event )
    }
    memset(dateTime, 0, sizeof(dateTime));
    formatTime(status.utcTimeEvent, dateTime);
-   INFO("sendInsertionStatusEvent m_spotIndex[%d] event[%d] utcTimeEvent[%llu] [%s] UTCMILLIS(tv)[%llu] utcTimeSpot[%llu] spotDuration[%d] m_rate[%f] status.spotNPT= [%d] startTime[%lld] endTime[%lld]\n",
-       m_spotIndex, event, status.utcTimeEvent, dateTime, UTCMILLIS(tv), status.utcTimeSpot, status.spotDuration, m_primaryStreamProcessor->getRetimestampRate(),
-       status.spotNPT,  m_primaryStreamProcessor->getInsertionStartTime(), insertionEndTime);
+   INFO("sendInsertionStatusEvent m_spotIndex[%d] event[%d] utcTimeEvent[%llu] [%s] UTCMILLIS(tv)[%llu] utcTimeSpot[%llu] spotDuration[%d] status.spotNPT= [%d] startTime[%lld] endTime[%lld]\n",
+       m_spotIndex, event, status.utcTimeEvent, dateTime, UTCMILLIS(tv), status.utcTimeSpot, status.spotDuration, status.spotNPT,  m_primaryStreamProcessor->getInsertionStartTime(), insertionEndTime);
 
    status.detailCode= m_detailCode;
    status.scale= 1.0;
@@ -3925,20 +3997,20 @@ void RBIContext::sendInsertionStatusEvent( int event )
 RBIStreamProcessor::RBIStreamProcessor()
   : m_havePAT(false), m_versionPAT(0), m_program(-1), m_pmtPid(-1), m_havePMT(false), m_versionPMT(0), 
     m_pcrPid(-1), m_videoPid(-1), m_audioPid(-1), m_triggerEnable(false), m_privateDataEnable(false), m_isH264(false),
-    m_inSync(false), m_haveCompatiblePCROffsets(false), m_packetSize(188), m_ttsSize(0), m_remainderOffset(0), m_remainderSize(0),
+    m_inSync(false), m_packetSize(188), m_ttsSize(0), m_remainderOffset(0), m_remainderSize(0),
     m_frameDetectEnable(false), m_streamOffset(0LL),
     m_frameStartOffset(0LL), m_bitRate(0), m_avgBitRate(0),
     m_ttsInsert(0xFFFFFFFF), m_frameWidth(-1), m_frameHeight(-1), m_isInterlaced(false), m_isInterlacedKnown(false),
-    m_frameType(0), m_scanForFrameType(false), m_scanHaveRemainder(false),
+    m_frameType(0), m_scanForFrameType(false), m_scanHaveRemainder(false), m_prescanForFrameType(false), m_prescanHaveRemainder(false),
     m_emulationPreventionCapacity(0), m_emulationPreventionOffset(0), m_emulationPrevention(0),
-    m_haveBaseTime(false), m_baseTime(-1LL), m_basePCR(-1LL), m_segmentBaseTime(-1LL), m_segmentBasePCR(-1LL),
-    m_currentPCR(-1LL), m_currentPTS(-1LL), m_leadTime(-1LL), m_currentAudioPTS(-1LL), m_currentMappedPTS(-1LL),
-    m_currentMappedPCR(-1LL), m_currentInsertPCR(-1LL), m_rate(1.0),
+    m_haveBaseTime(false), m_haveSegmentBasePCRAfterTransitionToAd(false), PCRBaseTime(false), m_baseTime(-1LL), m_basePCR(-1LL), m_segmentBaseTime(-1LL), m_segmentBasePCR(-1LL),
+    m_currentPCR(-1LL), m_prevCurrentPCR(-1LL), m_currentPTS(-1LL), m_leadTime(-1LL), m_currentAudioPTS(-1LL), m_currentMappedPTS(-1LL),
+    m_currentMappedPCR(-1LL), m_currentInsertPCR(-1LL),
     m_sample1PCR(-1LL), m_sample1PCROffset(0LL), m_sample2PCR(-1LL), m_sample2PCROffset(0LL),
-    m_trackContinuityCountersEnable(true), m_GOPSize(-1), m_frameInGOPCount(-1), m_mapStartPending(false), m_mapStartArmed(false), m_mapping(false),  
-    m_mapEndPending(false), m_mapEndPendingPrev(false), m_mapEnding(false), m_mapEndingNeedVideoEOF(false),
-    m_backToBack(false), m_backToBackPrev(false), m_randomAccess(false), m_randomAccessPrev(false), m_startOfSequence(false), m_startOfSequencePrev(false), 
-    m_mapEditGOP(false), m_spliceOffset(0), m_mapSpliceInPTS(-1LL), m_mapSpliceOutPTS(-1LL), m_mapSpliceInAbortPTS(-1LL), m_mapSpliceOutAbortPTS(-1LL), m_mapSpliceOutAbort2PTS(-1LL), 
+    m_trackContinuityCountersEnable(true), m_GOPSize(-1), m_frameInGOPCount(-1), m_startOfSequence(false), m_startOfSequencePrev(false),
+    m_mapStartPending(false), m_mapStartArmed(false), m_mapping(false), m_mapEndPending(false), m_mapEndPendingPrev(false), m_mapEnding(false), m_mapEndingNeedVideoEOF(false),
+    m_backToBack(false), m_backToBackPrev(false), m_randomAccess(false), m_randomAccessPrev(false), m_mapEditGOP(false), m_spliceOffset(0), m_mapSpliceOutPTS(-1LL),
+    m_mapSpliceInPTS(-1LL), m_mapSpliceOutAbortPTS(-1LL), m_mapSpliceInAbortPTS(-1LL), m_mapSpliceInAbort2PTS(-1LL), 
     m_mapStartPTS(-1LL), m_mapStartPCR(-1LL), m_insertStartTime(-1LL), m_insertEndTime(-1LL),
     m_lastInsertBufferTime(-1LL), m_nextInsertBufferTime(-1LL), m_lastInsertGetDataDuration(0),
     m_insertByteCount(0), m_insertByteCountError(0), m_minInsertBitRateOut(0), m_maxInsertBitRateOut(0), m_map(0), m_insertSrc(0),
@@ -3946,9 +4018,39 @@ RBIStreamProcessor::RBIStreamProcessor()
     m_audioComponentCount(0), m_audioComponents(0),
     m_dataComponentCount(0), m_dataComponents(0),
     m_events(0), m_filterAudio(false), m_filterAudioStopPTS(0LL), m_filterAudioStop2PTS(0LL),
-    m_audioReplicationEnabled(false), m_PCRoffsetThresholdEnabled(false), m_captureEndCount(0), m_outFile(0),
+    m_audioReplicationEnabled(false), m_captureEndCount(0), m_outFile(0),
     m_audioInsertCount(0), m_lastBufferInsertSize(1), m_replicatingAudio(false), m_replicateAudioSrcPid(-1),
-    m_replicateAudioStreamType(0), m_replicateAudioIndex(0), m_TimeSignalbase64Msg(NULL), m_splice_returnToNetwork_offset(0)
+    m_replicateAudioStreamType(0), m_replicateAudioIndex(0), m_TimeSignalbase64Msg(NULL), m_splicePTS_offset(1500),
+    m_adVideoFrameCount(0),
+    m_netReplaceableVideoFramesCnt(0),
+    m_lastAdVideoFramePTS(-1LL),
+    m_maxAdVideoFrameCountReached(false),
+    m_maxAdAudioFrameCountReached(false),
+    m_lastAdVideoFrameDetected(false),
+    m_lastAdPCR(-1), 
+        m_lastPCRTTSValue(0),
+        m_lastMappedPCRTTSValue(-1),
+        m_firstAdPacketAfterTransitionTTSValue(0), 
+        m_adVideoPktsDelayed(false),
+        m_adVideoPktsDelayedPCRBased(false),
+        m_adVideoPktsTooFast(false),
+        m_adAudioPktsDelayed(false), 
+        m_adPktsAccelerationEnable(false), 
+        m_skipNullPktsInAd(false), 
+        m_transitioningToAd(false), 
+        m_transitioningToNetwork(false),
+        m_ac3FrameByteCnt(0),
+        m_adAccelerationState(false),
+        m_removeNull_PSIPackets(false),
+        m_determineNetAC3FrameSizeDuration(true),
+        m_determineAdAC3FrameSizeDuration(true),
+        m_spliceAudioPTS_offset(2880),
+        m_currentAdAudioPTS(0), 
+        m_mapSpliceUpdatedOutPTS(-1LL), m_b2bPrevAdAudioData(NULL), m_b2bPrevAdAudioDataCopy(NULL),
+        m_b2bSavedAudioPacketsCnt(0),
+        m_b2bBackedAdAudioPacketsCnt(0),
+        m_prevAdBaseTime(-1LL),
+        m_prevAdSegmentBaseTime(-1LL)
 {
    memset( m_triggerPids, 0x00, sizeof(m_triggerPids) );
    memset( m_privateDataPids, 0x00, sizeof(m_privateDataPids) );
@@ -3964,7 +4066,6 @@ RBIStreamProcessor::RBIStreamProcessor()
    m_H264Enabled= RBIManager::getInstance()->getH264Enabled();
    m_captureEnabled= RBIManager::getInstance()->getCaptureEnabled();
    m_audioReplicationEnabled= RBIManager::getInstance()->getAudioReplicationEnabled();
-   m_PCRoffsetThresholdEnabled= RBIManager::getInstance()->getPCROffsetThresholdEnabled();
    m_spliceOffset= RBIManager::getInstance()->getSpliceOffset();
 }
 
@@ -4249,41 +4350,6 @@ bool RBIStreamProcessor::startInsertion( RBIInsertSource *insert, long long star
 
                 if ( result )
                 {
-                    double threshold = 0.20; // Default threshold is 20%
-                    long long offsetPCRLinear, offsetPCRInsert, m_offsetThreshold = 0;
-                    long long insertPTS, insertPCR;
-                    long long linearPTS, linearPCR;
-
-                    insertPTS= insert->startPTS();
-                    insertPCR= insert->startPCR();
-                    linearPTS= m_currentPTS;
-                    linearPCR= m_currentPCR;
-
-                    offsetPCRInsert= ((insertPTS - insertPCR) & MAX_90K);
-                    offsetPCRLinear= ((linearPTS - linearPCR) & MAX_90K);
-
-                    if(m_PCRoffsetThresholdEnabled)
-                    {
-                        FILE *fp = NULL;
-                        char buff[255]="";
-
-                        fp = fopen("/opt/threshold.txt", "r");
-                        if(fp)
-                        {
-                            fscanf(fp, "%s", buff);
-                            TRACE3("threshold : %s\n", buff );
-                            threshold= atof(buff);
-                            fclose(fp);
-                            fp=NULL;
-                        }
-                    }
-                    m_offsetThreshold = (offsetPCRInsert * threshold);
-                    TRACE3("m_offsetThreshold %lld threshold %f", m_offsetThreshold,  threshold);
-
-                    m_haveCompatiblePCROffsets = ((offsetPCRInsert + m_offsetThreshold) >= offsetPCRLinear);
-
-                    TRACE3( "replace: offsetPCRInsert %lld offsetPCRLinear %lld haveCompatiblePCROffsets: %d", offsetPCRInsert, offsetPCRLinear, m_haveCompatiblePCROffsets );
-
                     if ( m_map )
                     {
                         delete m_map;
@@ -4300,27 +4366,51 @@ bool RBIStreamProcessor::startInsertion( RBIInsertSource *insert, long long star
                     m_mapEditGOP= false;
                     m_mapping= false;
                     m_haveBaseTime= false;
-                    m_rate= 1.0;
-                    m_mapSpliceInPTS= ((startPTS+m_spliceOffset*90LL)&MAX_90K);
-                    m_mapSpliceOutPTS= endPTS;
-                    m_mapSpliceInAbortPTS= ((startPTS + 1000LL*90LL)&MAX_90K);
-                    m_mapSpliceOutAbortPTS= ((endPTS + 1000LL*90LL)&MAX_90K);
-                    m_mapSpliceOutAbort2PTS= ((endPTS + 1500LL*90LL)&MAX_90K);
+                    m_mapSpliceOutPTS= ((startPTS+m_spliceOffset*90LL)&MAX_90K);
+                    m_mapSpliceInPTS= endPTS;
+                    m_mapSpliceOutAbortPTS= ((startPTS + 1000LL*90LL)&MAX_90K);
+                    m_mapSpliceInAbortPTS= ((endPTS + 1000LL*90LL)&MAX_90K);
+                    m_mapSpliceInAbort2PTS= ((endPTS + 1500LL*90LL)&MAX_90K);
                     m_insertByteCount= 0;
                     m_insertByteCountError= 0;
                     m_minInsertBitRateOut= 0;
                     m_maxInsertBitRateOut= 0;
                     m_insertStartTime= getCurrentTimeMicro();
+                    DEBUG("Setting insert start time %lld " , m_insertStartTime);
                     m_lastInsertBufferTime= -1LL;
                     m_mapStartPTS= -1LL;
-                    m_mapStartPCR= -1LL;
                     m_sample1PCR= -1LL;
                     m_sample1PCROffset= 0LL;
                     m_sample2PCR= -1LL;
                     m_sample2PCROffset= 0LL;
+                    m_adVideoFrameCount = 0;
+                    m_mapSpliceUpdatedOutPTS = -1;
 
-                    INFO("replace: m_currentPTS %llx m_mapSpliceInPTS %llx m_mapSpliceInAbortPTS %llx m_mapSpliceOutAbortPTS %llx m_mapSpliceOutAbort2PTS %llx m_mapSpliceOutPTS %llx backToBack: %d",
-                            m_currentPTS, m_mapSpliceInPTS, m_mapSpliceInAbortPTS, m_mapSpliceOutAbortPTS, m_mapSpliceOutAbort2PTS, m_mapSpliceOutPTS, m_backToBack );
+                    m_netReplaceableVideoFramesCnt = round((double)((endPTS - startPTS)*VIDEO_FRAME_RATE/90000));
+                    INFO("Number of network video frames available for replacement %d", m_netReplaceableVideoFramesCnt);
+
+                    m_transitioningToAd = false;
+                    m_transitioningToNetwork = false;
+
+                    m_lastAdVideoFramePTS = -1LL;
+                    m_maxAdVideoFrameCountReached = false;
+                    m_maxAdAudioFrameCountReached = false;
+                    m_lastAdVideoFrameDetected = false;
+
+                    m_haveSegmentBasePCRAfterTransitionToAd = false;
+                    m_currentAdAudioPTS = 0;
+                    m_lastAdPCR = -1;
+                    m_removeNull_PSIPackets = false;
+                    m_determineNetAC3FrameSizeDuration = true;
+                    m_determineAdAC3FrameSizeDuration= true;
+
+                    if( !m_backToBackPrev )
+                    {
+                        m_lastMappedPCRTTSValue = -1;
+                        m_mapStartPCR= -1LL;
+                    }
+                    INFO("replace: m_currentPTS %llx m_mapSpliceOutPTS %llx m_mapSpliceOutAbortPTS %llx m_mapSpliceInAbortPTS %llx m_mapSpliceInAbort2PTS %llx m_mapSpliceInPTS %llx backToBack: %d",
+                            m_currentPTS, m_mapSpliceOutPTS, m_mapSpliceOutAbortPTS, m_mapSpliceInAbortPTS, m_mapSpliceInAbort2PTS, m_mapSpliceInPTS, m_backToBack );
                 }
             }
          }
@@ -4351,16 +4441,17 @@ bool RBIStreamProcessor::startInsertion( RBIInsertSource *insert, long long star
       m_mapEditGOP= false;
       m_mapping= false;
       m_haveBaseTime= false;
-      m_mapSpliceInPTS= startPTS;
-      m_mapSpliceOutPTS= endPTS;
-      m_mapSpliceInAbortPTS= ((startPTS + 1LL*90000LL)&MAX_90K);
-      m_mapSpliceOutAbortPTS= ((endPTS + 1000LL*90LL)&MAX_90K);
-      m_mapSpliceOutAbort2PTS= ((endPTS + 1500LL*90LL)&MAX_90K);
+      m_mapSpliceOutPTS= startPTS;
+      m_mapSpliceInPTS= endPTS;
+      m_mapSpliceOutAbortPTS= ((startPTS + 1LL*90000LL)&MAX_90K);
+      m_mapSpliceInAbortPTS= ((endPTS + 1000LL*90LL)&MAX_90K);
+      m_mapSpliceInAbort2PTS= ((endPTS + 1500LL*90LL)&MAX_90K);
       m_insertByteCount= 0;
       m_insertByteCountError= 0;
       m_minInsertBitRateOut= 0;
       m_maxInsertBitRateOut= 0;
       m_insertStartTime= getCurrentTimeMicro();
+      DEBUG("Setting insert start time Fixed %lld " , m_insertStartTime);
       m_lastInsertBufferTime= -1LL;
       m_mapStartPTS= -1LL;
       m_mapStartPCR= -1LL;
@@ -4369,8 +4460,21 @@ bool RBIStreamProcessor::startInsertion( RBIInsertSource *insert, long long star
       m_sample2PCR= -1LL;
       m_sample2PCROffset= 0LL;
 
-      INFO("fixed: m_currentPTS %llx m_mapSpliceInPTS %llx m_mapSpliceInAbortPTS %llx m_mapSpliceOutAbortPTS %llx m_mapSpliceOutAbort2PTS %llx m_mapSpliceOutPTS %llx",
-            m_currentPTS, m_mapSpliceInPTS, m_mapSpliceInAbortPTS, m_mapSpliceOutAbortPTS, m_mapSpliceOutAbort2PTS, m_mapSpliceOutPTS );
+        m_netReplaceableVideoFramesCnt = round((double)((endPTS - startPTS)*VIDEO_FRAME_RATE/90000));
+        INFO("Number of network video frames in fixed ad spot %d", m_netReplaceableVideoFramesCnt);
+
+        m_transitioningToAd = false;
+        m_transitioningToNetwork = false;      
+  
+        m_currentAdAudioPTS = 0;
+        m_lastMappedPCRTTSValue = -1;
+        m_lastAdPCR = -1;
+        m_determineNetAC3FrameSizeDuration = true;
+        m_determineAdAC3FrameSizeDuration= true;
+        m_mapSpliceUpdatedOutPTS = -1;
+
+      INFO("fixed: m_currentPTS %llx m_mapSpliceOutPTS %llx m_mapSpliceOutAbortPTS %llx m_mapSpliceInAbortPTS %llx m_mapSpliceInAbort2PTS %llx m_mapSpliceInPTS %llx",
+            m_currentPTS, m_mapSpliceOutPTS, m_mapSpliceOutAbortPTS, m_mapSpliceInAbortPTS, m_mapSpliceInAbort2PTS, m_mapSpliceInPTS );
    }
    
 exit:
@@ -4388,9 +4492,11 @@ exit:
 
 void RBIStreamProcessor::stopInsertion()
 {
+    // DELIA-38430: Start.
+    // Added the debug print to find the frequency of the issue DELIA-38430 reported in the field.
     long long diff = 0;
     long long playedOutPTS = (((m_currentPTS-m_mapStartPTS)&MAX_90K)/90LL);
-    long long spliceOutPTSDelta = (((m_mapSpliceOutPTS-m_mapSpliceInPTS)&MAX_90K)/90LL);
+    long long spliceOutPTSDelta = (((m_mapSpliceInPTS-m_mapSpliceOutPTS)&MAX_90K)/90LL);
 
     if ( playedOutPTS > spliceOutPTSDelta ) {
         diff = (playedOutPTS - spliceOutPTSDelta);
@@ -4405,8 +4511,9 @@ void RBIStreamProcessor::stopInsertion()
     {
         ERROR("stopInsertion delta between played out(%lld) and splice out(%lld) is (%lld)", playedOutPTS, spliceOutPTSDelta, diff);
     }
+    // DELIA-38430 : End.
 
-   INFO("stopInsertion: (m_currentPTS-m_mapStartPTS) (%lld) (m_mapSpliceOutPTS-m_mapSpliceInPTS)= (%lld) diff (%lld)\n", (((m_currentPTS-m_mapStartPTS)&MAX_90K)/90LL), (((m_mapSpliceOutPTS-m_mapSpliceInPTS)&MAX_90K)/90LL), diff);
+   INFO("stopInsertion: (m_currentPTS-m_mapStartPTS) (%lld) (m_mapSpliceInPTS-m_mapSpliceOutPTS)= (%lld) diff (%lld)\n", (((m_currentPTS-m_mapStartPTS)&MAX_90K)/90LL), (((m_mapSpliceInPTS-m_mapSpliceOutPTS)&MAX_90K)/90LL), diff);
 
    m_mapping= false;
    m_mapStartPending= false;
@@ -4415,7 +4522,7 @@ void RBIStreamProcessor::stopInsertion()
    m_randomAccess= false;
    m_mapEditGOP= false;
    m_frameDetectEnable= false;
-   m_haveBaseTime= false;
+   m_haveBaseTime= false;   
    m_mapStartPTS= -1LL;
    m_mapStartPCR= -1LL;
    m_sample1PCR= -1LL;
@@ -4428,6 +4535,22 @@ void RBIStreamProcessor::stopInsertion()
    m_replicatingAudio= false;
    m_replicateAudioSrcPid= -1;
    m_replicateAudioTargetPids.clear();
+   m_adVideoFrameCount = 0;
+   m_transitioningToAd = false;
+   m_transitioningToNetwork = false;   
+   m_adVideoPktsDelayed = false; 
+   m_adVideoPktsTooFast = false;
+   m_adAudioPktsDelayed = false; 
+   m_adPktsAccelerationEnable = false;
+   m_adAccelerationState = false;  
+   m_currentAdAudioPTS = 0;
+   m_lastAdPCR = -1;
+   m_removeNull_PSIPackets = false;
+
+   m_haveSegmentBasePCRAfterTransitionToAd = false;
+   m_determineNetAC3FrameSizeDuration = true;
+   m_determineAdAC3FrameSizeDuration= true;
+   
    if ( !m_backToBack )
    {
       m_ttsInsert= 0xFFFFFFFF;
@@ -4457,43 +4580,27 @@ int RBIStreamProcessor::getInsertionDataSize()
       now= getCurrentTimeMicro();
 
       insertBitRate= m_insertSrc->bitRate()*(m_packetSize/188.0);
-      if( m_audioReplicationEnabled && (m_insertByteCount > 0) )
+      if( m_audioReplicationEnabled && (m_insertByteCount > 0) && getLastBufferInsertSize() > 0 )
       {
          insertBitRate*= (((float)(getLastAudioInsertCount() * m_packetSize) + getLastBufferInsertSize() )/((float)getLastBufferInsertSize() ));
       }
 
-      // During steady state insertion us a nominal interval of 70 ms, but during the initial period where we 
-      // are also passing network audio use 35 ms to avoid audio underflows
-      nominalInterval= (m_haveCompatiblePCROffsets && m_mapStartArmed) ? 35000: 70000;   
+      // Use a nominal interval of 70 ms
+      nominalInterval=70000;  
 
       lastBufferTime= m_lastInsertBufferTime;
       if ( (lastBufferTime == -1LL) || (m_insertByteCount == 0) )
       {
-         if ( m_haveCompatiblePCROffsets && m_mapStartArmed )
-         {
-            // With compatible PCR offsets, setup for a nominal interval
-            interBufferTime= nominalInterval;
-            bytes= (insertBitRate * (((interBufferTime*m_rate)/1000000.0))/8);
-            packetCount= (bytes+(m_packetSize/2))/m_packetSize;
-            if ( packetCount > MAX_PACKETS )
-            {
-               packetCount= MAX_PACKETS;
-               INFO("Inserting MAX_PACKTS.");
-            }
-            size= packetCount*m_packetSize;
-         }
-         else
-         {
-            // Default to a multiple of packet size that is proportional
-            // to the source bitrate.
-            packetCount= (MAX_PACKETS*192LL*insertBitRate/15000000LL)/m_packetSize;
-            if ( packetCount > MAX_PACKETS )
-            {
-               packetCount= MAX_PACKETS;
-               INFO("Inserting MAX_PACKTS..");
-            }
-            size= packetCount*m_packetSize;
-         }
+        // Default to a multiple of packet size that is proportional
+        // to the source bitrate.
+        packetCount= (MAX_PACKETS*192LL*insertBitRate/15000000LL)/m_packetSize;
+
+        if ( packetCount > MAX_PACKETS )
+        {
+           packetCount= MAX_PACKETS;
+           INFO("Inserting MAX_PACKTS..");
+        }
+        size= packetCount*m_packetSize;
       }
       else
       {
@@ -4511,35 +4618,26 @@ int RBIStreamProcessor::getInsertionDataSize()
             now= getCurrentTimeMicro();
             interBufferTime= (now-lastBufferTime);
          }
-         bytes= (insertBitRate * (((interBufferTime*m_rate)/1000000.0))/8);
-         if ( m_haveCompatiblePCROffsets && m_mapStartArmed )
-         {
-            int avail= m_insertSrc->avail();
-            if ( avail < bytes )
-            {
-               if ( avail == 0 )
-               {
-                  return 0;
-               }
-               DEBUG("reducing insert bytes from %lld to %d to avoid delaying network audio", bytes, avail);
-               bytes= avail;
-            }
-         }
-         if ( m_mapEnding )
-         {
-            int avail= m_insertSrc->avail();
-            if ( bytes < avail )
-            {
-               DEBUG("map ending: bump insert size from %lld to %d", bytes, avail);
-               bytes= avail;
-            }
-         }
+         bytes= (insertBitRate * (((interBufferTime)/1000000.0))/8);
+
          packetCount= (bytes+m_insertByteCountError+(m_packetSize/2))/m_packetSize;
-         if ( packetCount > MAX_PACKETS )
-         {
-            packetCount= MAX_PACKETS;
-            INFO("Inserting MAX_PACKTS...");
-         }
+         
+        if (m_adVideoPktsDelayed || m_adAudioPktsDelayed || m_adVideoPktsDelayedPCRBased)
+        {
+            packetCount = MAX_PACKETS;
+            bytes = packetCount * m_packetSize;     
+            DEBUG("In getInsertionDataSize Ad packets delayed, sending max packets ");
+        } 
+        else if (m_adVideoPktsTooFast)
+        {
+            packetCount /= 2;
+        }
+
+        if ( packetCount > MAX_PACKETS )
+        {
+           packetCount= MAX_PACKETS;
+           INFO("Inserting MAX_PACKTS...");
+        }
          size= packetCount*m_packetSize;
          m_insertByteCountError += (bytes-size);
          TRACE2("m_insertByteCountError %d bytes %lld size %d", m_insertByteCountError, bytes, size );
@@ -4566,7 +4664,7 @@ int RBIStreamProcessor::getInsertionDataSize()
             m_maxInsertBitRateOut= outBitRate;
          }
 
-         int targetBitRate= (int)(insertBitRate*m_rate);
+         int targetBitRate= (int)(insertBitRate);
          bool emitLog= (((m_lastInsertBufferTime%2000000) < 1000000) && ((m_nextInsertBufferTime%2000000) > 1000000));
          bool alarm= (outBitRate < 0.9*targetBitRate);
          interBufferTime += m_lastInsertGetDataDuration;
@@ -4586,9 +4684,9 @@ int RBIStreamProcessor::getInsertionDataSize()
                    interBufferTime, size, outBitRate, m_minInsertBitRateOut, m_maxInsertBitRateOut, meanOutBitRate);
          }
       }
-   }     
+   }
    setLastBufferInsertSize( size );
-
+    
    return size;
 }
 
@@ -4597,13 +4695,104 @@ int RBIStreamProcessor::getInsertionData( unsigned char *packets, int size )
    int insertedSize= 0;
    unsigned char *packet, *bufferEnd;
    int insertBitRate;
-   unsigned int ttsInc = 0, ttsIncCalc = 0;
+   unsigned int ttsInc = 0;
    int mapPid;
    unsigned char byte3;
    long long start, end;
    int audioInsertCount= 0;
+   bool pktSkipped = false; 
 
    start= getCurrentTimeMicro();
+
+    if ( (m_maxAdVideoFrameCountReached || m_mapEndPending) && m_backToBack )
+    {
+        m_b2bSavedAudioPacketsCnt = 0;
+        m_b2bBackedAdAudioPacketsCnt = 0;
+        if( !m_maxAdAudioFrameCountReached )
+        {
+            unsigned char *adAudioPackets = NULL, *audioDataBufferEnd = NULL, *adPacket = NULL;
+            int maxNumOfAudPacketsToBeSaved = 300;
+
+            m_b2bPrevAdAudioData = (unsigned char*)calloc(maxNumOfAudPacketsToBeSaved*188, sizeof(unsigned char) );
+            adAudioPackets = m_b2bPrevAdAudioData;
+            m_b2bPrevAdAudioDataCopy = m_b2bPrevAdAudioData;
+            audioDataBufferEnd = m_b2bPrevAdAudioData + maxNumOfAudPacketsToBeSaved*188*sizeof(unsigned char);
+            adPacket = (unsigned char*)malloc(188*sizeof(unsigned char));
+
+            
+            if (adAudioPackets)
+            {                
+                packet= packets+m_ttsSize;
+                bufferEnd= packets+size;
+
+                while( adAudioPackets < audioDataBufferEnd )
+                {
+                    int lenDidRead = m_insertSrc->read( adPacket, 188 );
+                    if (lenDidRead == 188)
+                    {
+                        int insertPid= (((adPacket[1] << 8) | adPacket[2]) & 0x1FFF);
+                        int pid = m_map->m_pidMap[insertPid];
+                        if(pid == m_audioPid )
+                        {
+                            if(m_determineAdAC3FrameSizeDuration){
+                              int payloadOffset = 4;
+                              int adaptation = ((adPacket[3] & 0x30) >> 4);
+
+                              if (adaptation & 0x02) {
+                                  payloadOffset += (1 + adPacket[4]);
+                              }
+                              int payloadStart = (adPacket[1] & 0x40);
+                              if ((adaptation & 0x01) && payloadStart && ((adPacket[payloadOffset] == 0x00) && (adPacket[payloadOffset + 1] == 0x00) && (adPacket[payloadOffset + 2] == 0x01))) {
+                                  payloadOffset += (9 + adPacket[payloadOffset + 8]);
+                                  getAC3FrameSizeDuration( adPacket, payloadOffset, &adAC3FrameInfo );
+                                  if( adAC3FrameInfo.duration > 0 && adAC3FrameInfo.size > 0)
+                                  {
+                                      m_determineAdAC3FrameSizeDuration = false;
+                                  }
+                                }
+                            }
+                            if( !m_determineAdAC3FrameSizeDuration ){
+                                    long long audioPTS = getAC3FramePTS( adPacket, &adAC3FrameInfo, m_currentAdAudioPTS);
+                                if (audioPTS != -1)
+                                {
+                                    m_currentAdAudioPTS = audioPTS;
+                                    if (m_currentAdAudioPTS >= m_lastAdVideoFramePTS)
+                                    {
+                                        DEBUG("Maximum Ad Audio frames reached, Net Video frames to be replaced %d Ad Video frame count %d Last Ad Video Frame PTS %llx Last Ad Audio Frame PTS %llx", m_netReplaceableVideoFramesCnt, m_adVideoFrameCount, m_lastAdVideoFramePTS, m_currentAdAudioPTS); 
+                                        m_maxAdAudioFrameCountReached = true;
+                                        for( int i = 188 - adAC3FrameInfo.byteCnt; i < 188; i++ )
+                                        {
+                                            adPacket[i] = 0xFF;
+                                        }                                
+                                    }
+                                }
+                            }
+                            
+                            adPacket[1]= ((adPacket[1] & 0xE0) | ((pid>>8) & 0x1F));
+                            adPacket[2]= (pid & 0xFF);
+                            memcpy(adAudioPackets, adPacket, 188);
+                            adAudioPackets += 188;
+                            maxNumOfAudPacketsToBeSaved--;
+                            m_b2bSavedAudioPacketsCnt++;
+                            
+                            if( m_maxAdAudioFrameCountReached )
+                            {
+                                break;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+            }
+            DEBUG("B2B Ad save remaining ad audio data for insertion during the next LSA ad, number of audio packets read until splice point %d remaining space in buffer %d ", m_b2bSavedAudioPacketsCnt, maxNumOfAudPacketsToBeSaved);
+        }
+        DEBUG("B2B Ad stopping insertion at PTS %llx", m_currentPTS);
+        stopInsertion();
+    }
+
    
    if ( m_insertSrc && m_mapping )
    { 
@@ -4614,20 +4803,34 @@ int RBIStreamProcessor::getInsertionData( unsigned char *packets, int size )
       if ( m_ttsSize )
       {
          insertBitRate= m_insertSrc->bitRate()*(m_packetSize/188.0);
-         ttsInc= (8*192*27000000LL/(insertBitRate*m_rate));
+        ttsInc= (8*192*27000000LL/(insertBitRate));
          DEBUG("RBIStreamProcessor::getInsertionData: insertBitRate %d ttsInc %d", insertBitRate, ttsInc);
-         if ( m_haveCompatiblePCROffsets && (m_mapStartArmed || m_mapEnding) )
-         {
-            ttsIncCalc= ttsInc;
-            ttsInc= 0;
-         }
       }
 
       m_lastInsertBufferTime= m_nextInsertBufferTime;
 
+      int backedupAudFramePktCnt = 0;
+
       while( packet < bufferEnd )
       {
-         if ( m_audioReplicationEnabled && m_replicatingAudio )
+                
+        if( m_ttsSize ) 
+        {
+            if( m_adVideoPktsDelayed || m_adAudioPktsDelayed || m_adVideoPktsDelayedPCRBased )
+            {
+                ttsInc = 8*192*27/40;  
+            }
+            else if( m_adVideoPktsTooFast )
+            {
+                ttsInc= (8*192*2*27000000LL/(insertBitRate));
+            }
+            else
+            {   
+                ttsInc= (8*192*27000000LL/(insertBitRate));
+            } 
+        }
+        
+            if ( m_audioReplicationEnabled && m_replicatingAudio )
             {
                memcpy( packet, m_replicateAudioPacket, m_packetSize-m_ttsSize );
                mapPid= m_replicateAudioTargetPids[m_replicateAudioIndex];
@@ -4640,6 +4843,58 @@ int RBIStreamProcessor::getInsertionData( unsigned char *packets, int size )
                {
                   m_replicatingAudio= false;
                }
+            } 
+            else if(backedupAudFramePktCnt > 0 && m_backToBackPrev && (m_b2bSavedAudioPacketsCnt > 0 || m_b2bBackedAdAudioPacketsCnt > 0) )
+            {
+                mapPid = (((m_b2bPrevAdAudioData[1] << 8) | m_b2bPrevAdAudioData[2]) & 0x1FFF);                    
+                memcpy (packet, m_b2bPrevAdAudioData, 188);
+                if( m_b2bSavedAudioPacketsCnt > 0 )
+                {
+                    m_b2bSavedAudioPacketsCnt--;
+                    if( m_b2bSavedAudioPacketsCnt == 0 )
+                    {
+                        m_b2bPrevAdAudioData = m_b2bPrevAdAudioDataCopy;
+                    }
+                    else
+                    {
+                        m_b2bPrevAdAudioData += 188;
+                    }
+                }    
+                else if ( m_b2bBackedAdAudioPacketsCnt > 0 )
+                {
+                    m_b2bPrevAdAudioData += 188;
+                    
+                    if( (m_b2bPrevAdAudioData - m_b2bPrevAdAudioDataCopy) == 188*m_b2bBackedAdAudioPacketsCnt )
+                    {
+                        m_b2bBackedAdAudioPacketsCnt = 0;                        
+                    }
+                    
+                }    
+
+                backedupAudFramePktCnt--;
+                
+                if ( m_b2bSavedAudioPacketsCnt  == 0 && m_b2bBackedAdAudioPacketsCnt == 0)
+                {
+                    if( m_b2bPrevAdAudioDataCopy )
+                    {
+                        free(m_b2bPrevAdAudioDataCopy);                                                                        
+                    }
+                } 
+                // update continuity counters and timestamps
+                byte3= packet[3];
+                if ( byte3 & 0x10 )
+                {
+                    ++m_continuityCounters[mapPid];
+                }
+                packet[3]= ((byte3 & 0xF0)|(m_continuityCounters[mapPid] & 0x0F));
+                reTimestamp( packet, m_packetSize );
+
+                if ( m_audioReplicationEnabled && m_replicateAudioSrcPid != -1)
+                {
+                    m_replicatingAudio= true;
+                    m_replicateAudioIndex= 0;
+                    memcpy( m_replicateAudioPacket, packet, m_packetSize-m_ttsSize );
+                }
             }
             else
             {
@@ -4661,147 +4916,290 @@ int RBIStreamProcessor::getInsertionData( unsigned char *packets, int size )
                 }
                 else
                 {
-                    int lenDidRead= m_insertSrc->read( packet, m_packetSize-m_ttsSize );
+                    int lenDidRead = m_insertSrc->read( packet, m_packetSize-m_ttsSize );
+                    bool audioPacketFromPrevLSAAd = false;
+                    bool replicateAudioPacketFromPrevLSAAd = false;
+
                     if ( lenDidRead == (m_packetSize-m_ttsSize) )
                     {
                         int insertPid= (((packet[1] << 8) | packet[2]) & 0x1FFF);
-                        if ( insertPid == 0 )
-                        {
-                            mapPid= 0;
-                            memcpy( packet, m_map->m_replacementPAT+m_ttsSize, m_packetSize-m_ttsSize );
-                        }
-                        else if ( insertPid == m_map->m_pmtPid )
-                        {
 
-                            mapPid= m_pmtPid;
-                            memcpy( packet, m_map->m_replacementPMT+m_ttsSize, m_packetSize-m_ttsSize );
-                            m_map->m_replacementPMTReadOffset = m_packetSize;
-                            if( m_map->m_replacementPMTReadOffset != m_map->m_replacementPMTLength )
-                            {
-                                m_map->m_psiInsertionIncomplete = true;
-                            }
-                            //check: what if the ad PMT has multiple packets in them?
-                        }
-                        else if ( insertPid == 0x1FFF )
+                        if( insertPid == 0x1FFF && m_backToBackPrev && m_b2bSavedAudioPacketsCnt > 0 )
                         {
-                            mapPid= insertPid;
+                            if( m_b2bPrevAdAudioData )
+                            {
+                                if(m_b2bPrevAdAudioData[0] == 0x47)
+                                {
+                                    insertPid= (((m_b2bPrevAdAudioData[1] << 8) | m_b2bPrevAdAudioData[2]) & 0x1FFF);
+                                    memcpy (packet, m_b2bPrevAdAudioData, 188); 
+                                    m_b2bSavedAudioPacketsCnt--;
+                                    if( m_b2bSavedAudioPacketsCnt == 0 && m_b2bBackedAdAudioPacketsCnt > 0)
+                                    {
+                                        DEBUG("B2B Ad in replacing null packets resetting Ad buffer pointer to audio packets for current backed up ad audio packets m_b2bBackedAdAudioPacketsCnt %d ", m_b2bBackedAdAudioPacketsCnt);
+                                        m_b2bPrevAdAudioData = m_b2bPrevAdAudioDataCopy;
+                                    }
+                                    else if ( m_b2bSavedAudioPacketsCnt > 0 )
+                                    {
+                                        m_b2bPrevAdAudioData += 188;
+                                    }
+                                    audioPacketFromPrevLSAAd = true;
+                                    if ( m_audioReplicationEnabled && m_replicateAudioSrcPid != -1)
+                                    {
+                                        replicateAudioPacketFromPrevLSAAd = true;
+                                    }
+                                }
+                                if ( m_b2bSavedAudioPacketsCnt  == 0 && m_b2bBackedAdAudioPacketsCnt == 0 )
+                                {
+                                    DEBUG("B2B Ad remaining audio packets processed free memory ");
+                                    if( m_b2bPrevAdAudioDataCopy )
+                                    {
+                                        free(m_b2bPrevAdAudioDataCopy);                                                                        
+                                    }
+                                }
+                            }
+                        }
+                        if (insertPid == 0x1FFF && m_skipNullPktsInAd)
+                        {   
+                            pktSkipped = true;
                         }
                         else
                         {
-                            mapPid= m_map->m_pidMap[insertPid];
-                            if ( mapPid )
+                            if ( insertPid == 0 )
                             {
-                                if ( m_map->m_needPayloadStart[insertPid] )
+                                mapPid= 0;
+                                memcpy( packet, m_map->m_replacementPAT+m_ttsSize, m_packetSize-m_ttsSize );
+                            }
+                            else if ( insertPid == m_map->m_pmtPid )
+                            {
+
+                                mapPid= m_pmtPid;
+                                memcpy( packet, m_map->m_replacementPMT+m_ttsSize, m_packetSize-m_ttsSize );
+                                m_map->m_replacementPMTReadOffset = m_packetSize;
+                                if( m_map->m_replacementPMTReadOffset != m_map->m_replacementPMTLength )
                                 {
-                                    int payloadStart= (packet[1] & 0x40);
-                                    if ( payloadStart )
-                                    {
-                                        m_map->m_needPayloadStart[insertPid]= false;
-
-                                        // Force a discontinuity
-                                        ++m_continuityCounters[mapPid];
-
-                                        if ( m_haveCompatiblePCROffsets && m_mapStartArmed )
-                                        {
-                                            ttsInc= ttsIncCalc;
-                                            m_mapStartArmed= false;
-                                            DEBUG("first insert audio for pid %x, now using ttsInc %x", mapPid, ttsInc);
-                                        }
-                                    }
-                                    else
-                                    {
-                                        // map to null packet
-                                        mapPid= 0x1FFF;
-                                    }
+                                    m_map->m_psiInsertionIncomplete = true;
                                 }
-                                if ( m_mapEnding && m_haveCompatiblePCROffsets )
-                                {
-                                    if ( mapPid == m_videoPid )
-                                    {
-                                       if ( m_mapEndingNeedVideoEOF )
-                                       {
-                                          if ( packet[1] & 0x40 )
-                                          {
-                                             INFO("map ending: reached end of current video frame");
-                                             m_mapEndingNeedVideoEOF= false;
-                                          }
-                                       }
-                                       if ( !m_mapEndingNeedVideoEOF )
-                                       {
-                                           // We have reached the network video PTS to return to network
-                                           // but need to continue to pass Ad audio.  Convert any remaining Ad
-                                           // video packets to null packets.
-                                           mapPid= 0x1FFF;
-                                       }
-                                   }
-                               }
+                                //TODO: what if the ad PMT has multiple packets in them?
+                            }
+                            else if ( insertPid == 0x1FFF || audioPacketFromPrevLSAAd )
+                            {
+                                mapPid= insertPid;
                             }
                             else
                             {
-                                // map to null packet
-                                mapPid= 0x1FFF;
+                                mapPid= m_map->m_pidMap[insertPid];
+                                if ( mapPid )
+                                {
+                                    // Trim Ad video and audio frames if necessary                             
+                                    int payloadStart= (packet[1] & 0x40);
+                                    if ( mapPid == m_videoPid )
+                                    {
+                                        if ( !m_maxAdVideoFrameCountReached && payloadStart )
+                                        {
+                                            ++m_adVideoFrameCount;
+
+                                            int lastAdVideoFrameNumber = m_netReplaceableVideoFramesCnt;
+                                            // Locate Ad frame to exit    
+                                            if( m_adVideoFrameCount > m_netReplaceableVideoFramesCnt - 30 &&  m_insertSrc->getAdVideoExitFrameInfo().size() > 0 )
+                                            {     
+                                                int exitFrameInfoSize = m_insertSrc->getAdVideoExitFrameInfo().size();
+                                                for ( int index = (exitFrameInfoSize-1); index >= 0; --index )
+                                                {
+                                                    int exitFrameNumber = m_insertSrc->getAdVideoExitFrameInfo().at(index);
+                                                    if(exitFrameNumber <= m_netReplaceableVideoFramesCnt)
+                                                    {
+                                                        DEBUG("Found Ad frame to exit, frame number: %d ", exitFrameNumber  );
+                                                        if ( index == (exitFrameInfoSize-1) )
+                                                        {
+                                                            m_lastAdVideoFrameDetected = true;
+                                                        }
+                                                        lastAdVideoFrameNumber = exitFrameNumber;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+
+                                            if( (m_adVideoFrameCount >  lastAdVideoFrameNumber) || ( (m_adVideoFrameCount == lastAdVideoFrameNumber) && m_lastAdVideoFrameDetected ) )
+                                            {                                                    
+                                                int payload = 4;
+                                                int adaptation= ((packet[3] & 0x30)>>4);
+                                                if ( adaptation & 0x02 )
+                                                {
+                                                    payload += (1+packet[4]);
+                                                }
+                                                // Determine last Ad video frame PTS
+                                                if ( (packet[payload] == 0x00) && (packet[payload+1] == 0x00) && (packet[payload+2] == 0x01) )
+                                                {
+                                                    int tsbase= payload+9;
+
+                                                    if ( packet[payload+7] & 0x80 )
+                                                    {     
+                                                        if (m_lastAdVideoFrameDetected)
+                                                        {
+                                                            m_lastAdVideoFramePTS = readTimeStamp( &packet[tsbase] ) + (long long)(90000/VIDEO_FRAME_RATE);
+                                                        }
+                                                        else
+                                                        {
+                                                            m_lastAdVideoFramePTS = readTimeStamp( &packet[tsbase] );                                                         
+                                                        }
+                                                        DEBUG("Maximum Ad Video frames reached, Net Video frames to be replaced %d Ad Video frame count %d Last Ad Video Frame PTS %llx, m_lastAdVideoFrameDetected %d ", m_netReplaceableVideoFramesCnt, m_adVideoFrameCount, m_lastAdVideoFramePTS, m_lastAdVideoFrameDetected);                                                             
+                                                        m_maxAdVideoFrameCountReached = true;
+                                                        m_adPktsAccelerationEnable = false;
+                                                        m_adVideoPktsDelayed = false;
+                                                        m_adVideoPktsDelayedPCRBased = false;
+                                                        m_adAudioPktsDelayed = false;                                                        
+                                                        m_adVideoPktsTooFast = false;
+                                                    }
+                                                    --m_adVideoFrameCount;
+                                                }    
+                                            } 
+                                        }
+
+                                        if ( m_maxAdVideoFrameCountReached && !m_lastAdVideoFrameDetected)
+                                        {
+                                           mapPid= 0x1FFF;
+                                        }                                            
+                                    }                                       
+                                    else if( mapPid == m_audioPid )
+                                    {
+                                        if( m_maxAdVideoFrameCountReached )
+                                        {
+                                            if ( m_maxAdAudioFrameCountReached )
+                                            {
+                                                mapPid= 0x1FFF;
+                                            }
+                                            else
+                                            {
+                                                if(m_determineAdAC3FrameSizeDuration){
+                                                  int payloadOffset = 4;
+                                                  int adaptation = ((packet[3] & 0x30) >> 4);
+
+                                                  if (adaptation & 0x02) {
+                                                      payloadOffset += (1 + packet[4]);
+                                                  }
+                                                  payloadStart = (packet[1] & 0x40);
+                                                  if ((adaptation & 0x01) && payloadStart && ((packet[payloadOffset] == 0x00) && (packet[payloadOffset + 1] == 0x00) && (packet[payloadOffset + 2] == 0x01))) {
+                                                      payloadOffset += (9 + packet[payloadOffset + 8]);
+                                                      getAC3FrameSizeDuration( packet, payloadOffset, &adAC3FrameInfo );
+                                                      if( adAC3FrameInfo.duration > 0 && adAC3FrameInfo.size > 0)
+                                                      {
+                                                          m_determineAdAC3FrameSizeDuration = false;
+                                                      }
+                                                    }
+                                                }
+                                                if( !m_determineAdAC3FrameSizeDuration ){
+                                                        long long audioPTS = getAC3FramePTS( packet, &adAC3FrameInfo, m_currentAdAudioPTS);
+                                                    if (audioPTS != -1)
+                                                    {
+                                                        m_currentAdAudioPTS = audioPTS;
+                                                        if (m_currentAdAudioPTS >= m_lastAdVideoFramePTS)
+                                                        {
+                                                            DEBUG("Maximum Ad Audio frames reached, Net Video frames to be replaced %d Ad Video frame count %d Last Ad Video Frame PTS %llx Last Ad Audio Frame PTS %llx", m_netReplaceableVideoFramesCnt, m_adVideoFrameCount, m_lastAdVideoFramePTS, m_currentAdAudioPTS); 
+                                                            m_maxAdAudioFrameCountReached = true;
+                                                            for( int i = 188 - adAC3FrameInfo.byteCnt; i < 188; i++ )
+                                                            {
+                                                                packet[i] = 0xFF;
+                                                            }                                
+                                                        }
+                                                    }
+                                                }                                              
+                                            }
+                                        }
+                                        else if ( m_backToBackPrev && (m_b2bSavedAudioPacketsCnt > 0 || m_b2bBackedAdAudioPacketsCnt > 0) && !audioPacketFromPrevLSAAd )
+                                        {   
+                                            m_b2bBackedAdAudioPacketsCnt++;
+                                            unsigned char *adAudioPackets = m_b2bPrevAdAudioDataCopy + (m_b2bBackedAdAudioPacketsCnt -1)*188;   
+                                            packet[1]= ((packet[1] & 0xE0) | ((mapPid>>8) & 0x1F));
+                                            packet[2]= (mapPid & 0xFF);
+                                            memcpy(adAudioPackets, packet, 188);
+                                            backedupAudFramePktCnt = (adAC3FrameInfo.size/184);
+                                            mapPid = 0x1FFF;
+                                        }
+                                    }
+                                    if ( m_map->m_needPayloadStart[insertPid] )
+                                    {
+                                        int payloadStart= (packet[1] & 0x40);
+                                        if ( payloadStart )
+                                        {
+                                            m_map->m_needPayloadStart[insertPid]= false;
+
+                                            // Force a discontinuity
+                                            ++m_continuityCounters[mapPid];
+                                        }
+                                        else
+                                        {
+                                            // map to null packet
+                                            mapPid= 0x1FFF;
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    // map to null packet
+                                    mapPid= 0x1FFF;
+                                }
+
+                                packet[1]= ((packet[1] & 0xE0) | ((mapPid>>8) & 0x1F));
+                                packet[2]= (mapPid & 0xFF);
                             }
 
-                            packet[1]= ((packet[1] & 0xE0) | ((mapPid>>8) & 0x1F));
-                            packet[2]= (mapPid & 0xFF);
-                        }
-
-                        // update continuity counters
-                        if ( mapPid != 0x1FFF )
-                        {
-                            byte3= packet[3];
-                            if ( byte3 & 0x10 )
+                            // update continuity counters and timestamps
+                            if ( mapPid != 0x1FFF )
                             {
-                                ++m_continuityCounters[mapPid];
+                                byte3= packet[3];
+                                if ( byte3 & 0x10 )
+                                {
+                                    ++m_continuityCounters[mapPid];
+                                }
+                                packet[3]= ((byte3 & 0xF0)|(m_continuityCounters[mapPid] & 0x0F));
+                                reTimestamp( packet, m_packetSize );
                             }
-                            packet[3]= ((byte3 & 0xF0)|(m_continuityCounters[mapPid] & 0x0F));
-                        }
 
-                        reTimestamp( packet, m_packetSize );
+                            if ( (!m_maxAdAudioFrameCountReached && m_audioReplicationEnabled && (insertPid == m_replicateAudioSrcPid) && (mapPid != 0x1FFF)) || (replicateAudioPacketFromPrevLSAAd) )
+                            {
+                               m_replicatingAudio= true;
+                               m_replicateAudioIndex= 0;
+                               memcpy( m_replicateAudioPacket, packet, m_packetSize-m_ttsSize );
+                            }
+                        }    
+                    }
+                    else
+                    {
+                       if ( !m_mapEndPending )
+                       {
+                           if ( m_insertSrc->getTotalRetryCount() >= MAX_TOTAL_READ_RETRY_COUNT )
+                           {
+                              m_events->insertionStatusUpdate( this, RBI_DetailCode_abnormalTermination );
+                              m_mapSpliceInPTS= m_currentPTS;
+                           }
+                           else
+                           {
+                              long long now= getCurrentTimeMicro();
+                              long long elapsed= (now-m_insertStartTime)/1000;
+                              long long media= ((m_mapSpliceInPTS-m_mapSpliceOutPTS)&MAX_90K)/90LL;
+                              if( elapsed < (media-RBI_DEFAULT_ASSET_DURATION_OFFSET) && !m_maxAdAudioFrameCountReached && !m_maxAdVideoFrameCountReached)
+                              {
+                                 INFO("hit end of insertion content: m_currentPTS %llx now(%lld) m_insertStartTime(%lld) elapsed: %lld (us) media: %lld (us)", 
+                                       m_currentPTS, (now/1000), (m_insertStartTime/1000), elapsed, media);
+                                 m_events->insertionStatusUpdate( this, RBI_DetailCode_assetDurationInadequate );
+                                 m_mapSpliceInPTS= m_currentPTS;
+                              }
+                           }
+                       }
+                       m_mapEndPending= true;
+                       INFO("m_mapEndPending is set to TRUE. hit end of insertion.");
 
-                  if ( m_audioReplicationEnabled && (insertPid == m_replicateAudioSrcPid) && (mapPid != 0x1FFF) )
-                  {
-                     m_replicatingAudio= true;
-                     m_replicateAudioIndex= 0;
-                     memcpy( m_replicateAudioPacket, packet, m_packetSize-m_ttsSize );
-                  }
-               }
-               else
-               {
-                  if ( !m_mapEndPending )
-                  {
-                      if ( m_insertSrc->getTotalRetryCount() >= MAX_TOTAL_READ_RETRY_COUNT )
-                      {
-                         m_events->insertionStatusUpdate( this, RBI_DetailCode_abnormalTermination );
-                      }
-                      else
-                      {
-                         long long now= getCurrentTimeMicro();
-                         long long elapsed= (now-m_insertStartTime)/1000;
-                         long long media= ((m_mapSpliceOutPTS-m_mapSpliceInPTS)&MAX_90K)/90LL;
-                         if( elapsed < (media-RBI_DEFAULT_ASSET_DURATION_OFFSET))
-                         {
-                            INFO("hit end of insertion content: m_currentPTS %llx now(%lld) m_insertStartTime(%lld) elapsed: %lld (us) media: %lld (us)", 
-                                  m_currentPTS, (now/1000), (m_insertStartTime/1000), elapsed, media);
-                            m_events->insertionStatusUpdate( this, RBI_DetailCode_assetDurationInadequate );
-                         }
-                      }
-                      m_mapSpliceOutPTS= m_currentPTS;
-                  }
-                  m_mapEndPending= true;
-                  INFO("m_mapEndPending is set to TRUE. hit end of insertion.");
-
-                  // Convert to null packet
-                  mapPid= 0x1FFF;
-                  packet[0]= 0x47;
-                  packet[1]= ((packet[1] & 0xE0) | ((mapPid>>8) & 0x1F));
-                  packet[2]= (mapPid & 0xFF);
-               }
+                       // Convert to null packet
+                       mapPid= 0x1FFF;
+                       packet[0]= 0x47;
+                       packet[1]= ((packet[1] & 0xE0) | ((mapPid>>8) & 0x1F));
+                       packet[2]= (mapPid & 0xFF);
+                    }
+                }
             }
-         }
 
-         long long start= (m_mapSpliceInPTS-500*90LL)&MAX_90K;
-         if ( !PTS_IN_RANGE( m_currentPTS, start, m_mapSpliceOutPTS ) && m_insertSrc->getTotalRetryCount() < MAX_TOTAL_READ_RETRY_COUNT)
+         long long start= (m_mapSpliceOutPTS-500*90LL)&MAX_90K;
+         if ( !PTS_IN_RANGE( m_currentPTS, start, m_mapSpliceInPTS ) && m_insertSrc->getTotalRetryCount() < MAX_TOTAL_READ_RETRY_COUNT && !m_backToBackPrev )
          {
             int avail= m_insertSrc->avail();
             int bufferSize = RBIManager::getInstance()->getBufferSize();
@@ -4814,25 +5212,33 @@ int RBIStreamProcessor::getInsertionData( unsigned char *packets, int size )
             }
          }
 
-         if ( m_ttsSize )
-         {
-            packet[-4]= ((m_ttsInsert>>24)&0xFF);
-            packet[-3]= ((m_ttsInsert>>16)&0xFF);
-            packet[-2]= ((m_ttsInsert>>8)&0xFF);
-            packet[-1]= ((m_ttsInsert)&0xFF);
+        if( !pktSkipped )
+        {
+            if ( m_ttsSize )
+            {
+               packet[-4]= ((m_ttsInsert>>24)&0xFF);
+               packet[-3]= ((m_ttsInsert>>16)&0xFF);
+               packet[-2]= ((m_ttsInsert>>8)&0xFF);
+               packet[-1]= ((m_ttsInsert)&0xFF);
 
-            m_ttsInsert += ttsInc;
-         }      
+               if (packet[0] == 0x48) {
+                   m_lastMappedPCRTTSValue = m_ttsInsert;
+                   packet[0] = 0x47;
+               }
 
-         if ( !(m_mapEnding && (mapPid == 0x1FFF)) )
-         {
-             packet += m_packetSize;
-         }
-         
-         if ( m_mapEndPending )
-         {
-            break;
-         }
+               m_ttsInsert += ttsInc;
+            }
+            packet += m_packetSize;
+        }
+        else
+        {
+            pktSkipped = false;
+        }
+
+        if ( m_mapEndPending )
+        {
+           break;
+        }
       }
 
       insertedSize= ((packet-m_ttsSize)-packets);
@@ -4857,11 +5263,432 @@ int RBIStreamProcessor::getInsertionData( unsigned char *packets, int size )
    {
       INFO("map ending: done inserting Ad data: total %d bytes", m_insertByteCount);
       m_mapEnding= false;
-      stopInsertion();
    }
 
    return insertedSize;
 }
+
+
+bool RBIStreamProcessor::isNextPacketAudio() {
+    bool nextPacketAudio = false;
+
+    int insertPid = m_insertSrc->getNextAdPacketPid();
+
+    int mapPid = m_map->m_pidMap[insertPid];
+    if (mapPid == m_audioPid) {
+        nextPacketAudio = true;
+    }
+
+    return nextPacketAudio;
+}
+
+int RBIStreamProcessor::getInsertionDataDuringTransitionToAd(unsigned char *networkPacket) {
+    int insertedSize = 0;
+    unsigned char *packet;
+    int mapPid = 0x1FFF;
+    unsigned char byte3;
+    long long start, end;
+    bool findAdVideoPacket = true;
+
+    start = getCurrentTimeMicro();
+
+    if (m_insertSrc) {
+        packet = networkPacket;
+        while(findAdVideoPacket)
+        {
+            if (!isNextPacketAudio()) 
+            {
+                int lenDidRead = m_insertSrc->read(packet, m_packetSize - m_ttsSize);
+                if (lenDidRead == (m_packetSize - m_ttsSize)) 
+                {
+                    int insertPid = (((packet[1] << 8) | packet[2]) & 0x1FFF);
+                    mapPid = m_map->m_pidMap[insertPid];
+                    if (mapPid && mapPid == m_videoPid) {
+                        int payloadStart= (packet[1] & 0x40);
+                        if ( payloadStart )
+                        {
+                            ++m_adVideoFrameCount;
+                        }                                                                                                   
+                        if (m_map->m_needPayloadStart[insertPid]) {                                    
+                            int payloadStart = (packet[1] & 0x40);
+                            if (payloadStart) {
+                                m_map->m_needPayloadStart[insertPid] = false;
+
+                                // Force a discontinuity
+                                ++m_continuityCounters[mapPid];
+                            } else {
+                                // map to null packet
+                                mapPid = 0x1FFF;
+                            }
+                        }
+                    } else {
+                        mapPid = 0x1FFF;
+                    }
+
+                    packet[1] = ((packet[1] & 0xE0) | ((mapPid >> 8) & 0x1F));
+                    packet[2] = (mapPid & 0xFF);
+
+                    // update continuity counters
+                    if (mapPid != 0x1FFF) {
+                        byte3 = packet[3];
+                        if (byte3 & 0x10) {
+                            ++m_continuityCounters[mapPid];
+                        }
+                        packet[3] = ((byte3 & 0xF0) | (m_continuityCounters[mapPid] & 0x0F));
+                        reTimestampDuringTransitionToAd(packet, m_packetSize);
+                        findAdVideoPacket = false;
+                    }
+                    else
+                    {
+                        if(!m_removeNull_PSIPackets)
+                        {
+                            findAdVideoPacket = false;
+                        }
+                    }    
+                }
+                else {
+                    if (!m_mapEndPending) {
+                            if ( m_insertSrc->getTotalRetryCount() >= MAX_TOTAL_READ_RETRY_COUNT )
+                            {
+                                m_events->insertionStatusUpdate( this, RBI_DetailCode_abnormalTermination );
+                                m_mapSpliceInPTS= m_currentPTS;
+                            }
+                            else
+                            {
+                                long long now = getCurrentTimeMicro();
+                                long long elapsed = now - m_insertStartTime;
+                                long long media= ((m_mapSpliceInPTS-m_mapSpliceOutPTS)&MAX_90K)/90LL;
+                                if( elapsed < (media-RBI_DEFAULT_ASSET_DURATION_OFFSET))
+                                {
+                                    INFO("In getInsertionDataDuringTransitionToAd, hit end of insertion content: m_currentPTS %llx now(%lld) m_insertStartTime(%lld) elapsed: %lld (us) media: %lld (us)", 
+                                          m_currentPTS, (now/1000), (m_insertStartTime/1000), elapsed, media);
+                                    m_events->insertionStatusUpdate( this, RBI_DetailCode_assetDurationInadequate );
+                                    m_mapSpliceInPTS= m_currentPTS;
+                                }                        
+                            }                        
+                      }
+                    m_mapEndPending = true;
+                    INFO("In getInsertionDataDuringTransitionToAd, m_mapEndPending is set to TRUE. hit end of insertion.");
+
+                    // Convert to null packet
+                    mapPid = 0x1FFF;
+                    packet[0] = 0x47;
+                    packet[1] = ((packet[1] & 0xE0) | ((mapPid >> 8) & 0x1F));
+                    packet[2] = (mapPid & 0xFF);
+
+                    break;
+                }
+            }    
+            else 
+            {
+                insertedSize = -1;
+                break;
+            }
+        }
+    }
+
+    long long inPtsStart= (m_mapSpliceOutPTS-500*90LL)&MAX_90K;
+    if ( !PTS_IN_RANGE( m_currentPTS, inPtsStart, m_mapSpliceInPTS ) && m_insertSrc->getTotalRetryCount() < MAX_TOTAL_READ_RETRY_COUNT)
+    {
+       int avail= m_insertSrc->avail();
+       int bufferSize = RBIManager::getInstance()->getBufferSize();
+       if(avail > bufferSize)
+       {
+          INFO("In getInsertionDataDuringTransitionToAd, insertion content duration reached: m_currentPTS %llx. avail[%d] bufferSize[%d]", m_currentPTS, avail, bufferSize);
+          m_events->insertionStatusUpdate( this, RBI_DetailCode_assetDurationExceeded );
+          m_mapEndPending= true;
+          INFO("In getInsertionDataDuringTransitionToAd, m_mapEndPending is set to TRUE. insertion content duration reached.");
+       }
+    }
+         
+    packet += m_packetSize;
+
+    if (insertedSize != -1)
+    {
+        insertedSize = ((packet - m_ttsSize) - networkPacket);
+        m_insertByteCount += insertedSize;
+    }
+    
+    end = getCurrentTimeMicro();
+    m_lastInsertGetDataDuration = end - start;
+   
+   if ( m_mapEnding && !m_mapEndingNeedVideoEOF )
+   {
+      INFO("In getInsertionDataDuringTransitionToAd, map ending: done inserting Ad data: total %d bytes", m_insertByteCount);
+      m_mapEnding= false;
+    }
+    
+    return insertedSize;
+}
+
+void RBIStreamProcessor::reTimestampDuringTransitionToAd(unsigned char *packet, int length) {
+    long long timeOffset, adjustedPCR;
+
+    if (!m_haveBaseTime) {
+        m_haveBaseTime = true;
+        m_baseTime = m_insertSrc->startPTS();
+        m_basePCR = m_insertSrc->startPCR();        
+        m_segmentBaseTime = (m_mapStartPTS != -1LL) ? m_mapStartPTS : m_currentPTS;
+        m_segmentBasePCR = (m_mapStartPCR != -1LL) ? m_mapStartPCR : m_currentPCR;
+        m_currentMappedPCR = m_segmentBasePCR;
+        DEBUG("In reTimestampDuringTransitionToAd m_baseTime %llx m_basePCR %llx m_segmentBaseTime %llx m_mapStartPTS %llx m_currentPTS %llx m_mapStartPCR %llx m_currentPCR %llx ", m_baseTime, m_basePCR, m_segmentBaseTime, m_mapStartPTS, m_currentPTS, m_mapStartPCR, m_currentPCR);
+    }
+
+    for (int i = 0; i < length; i += m_packetSize) {
+        int payloadStart = (packet[1] & 0x40);
+        int adaptation = ((packet[3] & 0x30) >> 4);
+        int payload = 4;
+        int pid;
+
+        pid= (((packet[1] << 8) | packet[2]) & 0x1FFF);
+
+        // Update PCR values
+        if (adaptation & 0x02) {
+            int adaptationFieldLength = packet[4];
+            int adaptationFlags = packet[5];
+            if ( (adaptationFieldLength != 0) &&  (adaptationFlags & 0x10) ) {
+                    m_lastAdPCR = readPCR(&packet[6]);                       
+                     unsigned int tts = ((packet[-4] << 24) | (packet[-3] << 16) | (packet[-2] << 8) | packet[-1]);
+                    if (m_currentPCR != -1) {                        
+                        m_currentMappedPCR = (m_currentPCR + ((tts - m_lastPCRTTSValue) / 300)) & MAX_90K;
+                    } else {
+                        m_currentInsertPCR = m_lastAdPCR;
+                        timeOffset = m_lastAdPCR - m_basePCR;
+                        adjustedPCR = (((long long) (timeOffset) + m_segmentBasePCR)&0x1FFFFFFFFLL);
+                        if (adjustedPCR < m_mapStartPCR) {
+                            m_mapStartPCR = (m_mapStartPCR + 10)&0x1FFFFFFFFLL;
+                            DEBUG("RBIStreamProcessor::reTimestampDuringTransitionToAd: rateAdjustedPCR clamped from %llx to %llx", adjustedPCR, m_mapStartPCR);
+                            adjustedPCR = m_mapStartPCR;
+                        }
+                        m_currentMappedPCR = adjustedPCR;
+                    }                  
+                    writePCR(&packet[6], m_currentMappedPCR);
+                    m_lastMappedPCRTTSValue = tts;
+                }
+                payload += (1 + packet[4]);
+            }
+
+            // Update PTS/DTS values
+            if (payloadStart) {
+                if ((packet[payload] == 0x00) && (packet[payload + 1] == 0x00) && (packet[payload + 2] == 0x01)) {
+                    int tsbase = payload + 9;
+                    long long timeOffset;
+                    long long PTS = 0, DTS = 0;
+                    long long adjustedPTS = 0, adjustedDTS = 0;
+
+                    if (packet[payload + 7] & 0x80) {
+                        PTS = readTimeStamp(&packet[tsbase]);
+                        timeOffset = PTS - m_baseTime;
+                        adjustedPTS = (((long long) (timeOffset) + m_segmentBaseTime)&0x1FFFFFFFFLL);
+                        writeTimeStamp(&packet[tsbase], packet[tsbase] >> 4, adjustedPTS);
+                        tsbase += 5;
+                    }
+                    if (packet[payload + 7] & 0x40) {
+                        DTS = readTimeStamp(&packet[tsbase]);
+                        timeOffset = DTS - m_baseTime;
+                        adjustedDTS = (((long long) (timeOffset) + m_segmentBaseTime)&0x1FFFFFFFFLL);
+                        writeTimeStamp(&packet[tsbase], packet[tsbase] >> 4, adjustedDTS);
+                        tsbase += 5;
+                    }
+                                       
+                    if(adjustedDTS == 0)
+                    {
+                        adjustedDTS = adjustedPTS;
+                        DTS = PTS;
+                    }
+
+                    if( m_lastAdPCR != -1)
+                    {                                            
+                        double requiredStartupDelay = (DTS - m_lastAdPCR)/90000.0;
+                    
+                        double currentStartupDelay = (adjustedDTS - m_currentMappedPCR)/90000.0;
+                        if( currentStartupDelay < requiredStartupDelay ) 
+                        { 
+                            DEBUG("RBIStreamProcessor::reTimestampDuringTransitionToAd: replacing Null and PSI packets currentStartupDelay %f requiredStartupDelay %f", currentStartupDelay, requiredStartupDelay);                            
+                            m_removeNull_PSIPackets = true;
+                        }
+                    }
+                        
+                    if (packet[payload + 7] & 0x02) {
+                        // CRC flag is set.  Following the PES header will be the CRC for the previous PES packet
+                        WARNING("Warning: PES packet has CRC flag set");
+                    }                    
+                }
+            }
+ 
+        packet += m_packetSize;
+    }
+}
+
+int RBIStreamProcessor::getInsertionAudioDataDuringTransitionBackToNetwork(unsigned char *packets) {
+    int insertedSize = 188;
+    unsigned char *packet;
+    int mapPid;
+    unsigned char byte3;
+
+    
+    if (m_insertSrc) {
+        packet = packets;
+
+        bool audioPacketFound = false;
+        bool endOfAdStream = false;
+
+        if ( m_maxAdAudioFrameCountReached )
+        {
+            insertedSize = -1;                                        
+        }
+
+        if ( m_audioReplicationEnabled && m_replicatingAudio )
+        {
+           memcpy( packet, m_replicateAudioPacket, m_packetSize-m_ttsSize );
+           mapPid= m_replicateAudioTargetPids[m_replicateAudioIndex];
+           packet[1]= ((packet[1] & 0xE0) | ((mapPid>>8) & 0x1F));
+           packet[2]= (mapPid & 0xFF);
+           ++m_replicateAudioIndex;
+           if ( m_replicateAudioIndex >= m_replicateAudioTargetPids.size() )
+           {
+              m_replicatingAudio= false;
+           }
+        } 
+        else
+        {
+            while (!audioPacketFound && !endOfAdStream &&  !m_maxAdAudioFrameCountReached && (insertedSize != -2) ) {
+                int lenDidRead = m_insertSrc->read(packet, m_packetSize - m_ttsSize);
+                if (lenDidRead == (m_packetSize - m_ttsSize)) {
+                    int insertPid = (((packet[1] << 8) | packet[2]) & 0x1FFF);
+                    mapPid = m_map->m_pidMap[insertPid];
+
+                    if (mapPid && mapPid == m_audioPid) {
+                        if(m_determineAdAC3FrameSizeDuration){
+                            int payloadOffset = 4;
+                            int adaptation = ((packet[3] & 0x30) >> 4);                            
+
+                            if (adaptation & 0x02) {
+                                payloadOffset += (1 + packet[4]);
+                            }
+                            int payloadStart = (packet[1] & 0x40);
+                            if ((adaptation & 0x01) && payloadStart && ((packet[payloadOffset] == 0x00) && (packet[payloadOffset + 1] == 0x00) && (packet[payloadOffset + 2] == 0x01))) {
+                                payloadOffset += (9 + packet[payloadOffset + 8]);
+                                getAC3FrameSizeDuration( packet, payloadOffset, &adAC3FrameInfo );
+                                if( adAC3FrameInfo.duration != -1 && adAC3FrameInfo.size != -1)
+                                {
+                                    m_determineAdAC3FrameSizeDuration = false;
+                                }
+                            }
+                        }
+
+                        if( !m_determineAdAC3FrameSizeDuration ){
+                                long long audioPTS = getAC3FramePTS( packet, &adAC3FrameInfo, m_currentAdAudioPTS);
+                            if (audioPTS != -1)
+                            {
+                                m_currentAdAudioPTS = audioPTS;
+
+                                if (m_currentAdAudioPTS >= m_lastAdVideoFramePTS)
+                                {
+                                    DEBUG("Maximum Ad Audio frames reached Last Ad Video Frame PTS %llx Last Ad Audio Frame PTS %llx", m_lastAdVideoFramePTS, m_currentAdAudioPTS); 
+                                    m_maxAdAudioFrameCountReached = true;
+                                    for( int i = 188 - adAC3FrameInfo.byteCnt; i < 188; i++ )
+                                    {
+                                        packet[i] = 0xFF;
+                                    }                                
+                                }
+                            }
+                                }
+
+                        packet[1] = ((packet[1] & 0xE0) | ((mapPid >> 8) & 0x1F));
+                        packet[2] = (mapPid & 0xFF);
+
+                        if ( mapPid != 0x1FFF )
+                        {
+                            byte3 = packet[3];
+                            if (byte3 & 0x10) {
+                                ++m_continuityCounters[mapPid];
+                            }
+                            packet[3] = ((byte3 & 0xF0) | (m_continuityCounters[mapPid] & 0x0F));
+                            reTimestampDuringTransitionBack(packet, m_packetSize - m_ttsSize, 0, 0);
+                        }
+
+                        audioPacketFound = true;
+
+                        if ( !m_maxAdAudioFrameCountReached && m_audioReplicationEnabled && m_replicateAudioSrcPid != -1 )
+                        {
+                           m_replicatingAudio= true;
+                           m_replicateAudioIndex= 0;
+                           memcpy( m_replicateAudioPacket, packet, m_packetSize-m_ttsSize );
+                        }
+                    }
+                } else {
+                    endOfAdStream = true;
+                    insertedSize = -1;
+                }
+            }
+        }
+    }
+    return insertedSize;
+}
+
+void RBIStreamProcessor::reTimestampDuringTransitionBack(unsigned char *packet, int length, long long bufferStartPCR, unsigned int bufferStartPCRTTSValue) {
+    //TRACE1("RBIStreamProcessor::reTimestamp: packet %p length %d", packet, length );
+    for (int i = 0; i < length; i += m_packetSize) {
+        int payloadStart = (packet[1] & 0x40);
+        int adaptation = ((packet[3] & 0x30) >> 4);
+        int payload = 4;
+        int pid;
+
+        pid = (((packet[1] << 8) | packet[2]) & 0x1FFF);
+
+        {
+            // Update PCR values
+            if (adaptation & 0x02) {
+                int adaptationFlags = packet[5];
+                if (adaptationFlags & 0x10) {
+                }
+                payload += (1 + packet[4]);
+            }
+
+            // Update PTS/DTS values
+            if (payloadStart) {
+                if ((packet[payload] == 0x00) && (packet[payload + 1] == 0x00) && (packet[payload + 2] == 0x01)) {
+                    int pesHeaderDataLen = packet[payload + 8];
+                    int tsbase = payload + 9;
+                    long long timeOffset;
+                    long long PTS = 0, DTS = 0;
+                    long long rateAdjustedPTS = 0, rateAdjustedDTS = 0;
+
+                    if (packet[payload + 7] & 0x80) {
+                        PTS = readTimeStamp(&packet[tsbase]);
+                        timeOffset = PTS - m_baseTime;
+                        rateAdjustedPTS = (((long long) (timeOffset) + m_segmentBaseTime)&0x1FFFFFFFFLL);
+                        writeTimeStamp(&packet[tsbase], packet[tsbase] >> 4, rateAdjustedPTS);
+                        if (pid == m_pcrPid) {
+                            m_currentMappedPTS = rateAdjustedPTS;
+                        }
+                        tsbase += 5;
+                    }
+                    if (packet[payload + 7] & 0x40) {
+                        DTS = readTimeStamp(&packet[tsbase]);
+                        timeOffset = DTS - m_baseTime;
+                        rateAdjustedDTS = (((long long) (timeOffset) + m_segmentBaseTime)&0x1FFFFFFFFLL);
+                        writeTimeStamp(&packet[tsbase], packet[tsbase] >> 4, rateAdjustedDTS);
+                        tsbase += 5;
+                    }
+                    if (rateAdjustedDTS == 0) {
+                        rateAdjustedDTS = rateAdjustedPTS;
+                        DTS = PTS;
+                    }
+                    if (packet[payload + 7] & 0x02) {
+                        // CRC flag is set.  Following the PES header will be the CRC for the previous PES packet
+                        WARNING("Warning: PES packet has CRC flag set");
+                    }
+
+                    payload = payload + 9 + pesHeaderDataLen;
+                }
+            }
+        }
+        packet += m_packetSize;
+    }
+}
+
 
 int RBIStreamProcessor::processPackets( unsigned char* packets, int size, int *isTSFormatError )
 {
@@ -4879,7 +5706,7 @@ int RBIStreamProcessor::processPackets( unsigned char* packets, int size, int *i
 
    if ( !m_inSync && m_triggerEnable )
    {
-       bfirstIfLoop = true;
+      bfirstIfLoop = true;
       // If this processor is being used for insertion its input must be TS packet aligned.
       int ps, ts, ttsSize;
       bool sync= true;
@@ -5051,14 +5878,30 @@ int RBIStreamProcessor::processPackets( unsigned char* packets, int size, int *i
    return acceptedSize;
 }
 
-int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size, int *isTSFormatError )
+int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size, int *isTSFormatError  )
 {
    int processedSize= 0;
    unsigned char *packet = NULL, *bufferEnd = NULL, *inputEnd = NULL;
    int pid, payloadStart = 0, adaptation = 0, payloadOffset = 0;
    int packetCount= 0;
    bool wasMapping= m_mapping;
-   bool wasArmed= m_mapStartArmed;
+   bool wasArmed= m_mapStartArmed;   
+   int trimSize = 0;
+   long long trimmedCurrentPCR =0; 
+   unsigned int trimmedPCRTTSValue =0;
+   unsigned char *lastAdAudioPacket;
+   long long alternateVideoSplicePointExitFramePTS = -1;
+   long long alternateVideoSplicePointPTS = -1;
+    
+   
+   lastAdAudioPacket = 0;
+   
+    // Initialize pointers to Network and AC3 PES packet length field to null
+   adAC3FrameInfo.pesPacketLengthMSB = 0;
+   adAC3FrameInfo.pesPacketLengthLSB = 0;
+   netAC3FrameInfo.pesPacketLengthMSB = 0;
+   netAC3FrameInfo.pesPacketLengthLSB = 0;
+  
 
    packet= packets+m_ttsSize;
 
@@ -5068,7 +5911,7 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
       ERROR( "RBIStreamProcessor::processPacketsAligned: Error: buffer not TS packet aligned packet[0] = 0x%X size = %d m_packetSize= %d",packet[0],size,m_packetSize );
       *isTSFormatError = TS_FORMATERROR_RETRYCOUNT;
       return 0;
-   }
+   }   
    else
       *isTSFormatError = 0;
 
@@ -5087,7 +5930,148 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
          TRACE3("small TTS gap between network audio buffers %d : expect possible audio underflow", ttsDiff);
       }
    }
+   
+   // Do a prescan of Splice Points
+   if (PTS_IN_RANGE( m_currentPTS, (m_mapSpliceInPTS - 90000), m_mapSpliceInAbortPTS) && !m_filterAudio && m_insertSrc)
+   {
+        long long videoPTS = 0;
+        long long prevVideoPTS = -1;
+        long long prevDiffPTS = MAX_90K;
 
+        int adaptationLen= -1;
+        int adaptationFlags= -1;
+        while( packet < bufferEnd )
+        {
+            pid= (((packet[1] << 8) | packet[2]) & 0x1FFF);
+            if ( pid == m_videoPid )
+            {
+                adaptation= ((packet[3] & 0x30)>>4);
+                payloadStart= (packet[1] & 0x40);
+                payloadOffset= 4;
+                if ( adaptation & 0x02 )
+                {
+                    payloadOffset += (1+packet[4]);
+                }
+                if ( adaptation & 0x01 )
+                {
+                    if ( payloadStart )
+                    {
+                        if ( (packet[payloadOffset] == 0x00) && (packet[payloadOffset+1] == 0x00) && (packet[payloadOffset+2] == 0x01) )
+                        {
+                            int streamid= packet[payloadOffset+3];
+                            if ( (streamid >= 0xE0) && (streamid <= 0xEF) )
+                            {
+                                videoPTS = 0;
+                                m_frameType = 0;
+                                int pesHeaderDataLen= packet[payloadOffset+8];                                
+                                if ( packet[payloadOffset+7] & 0x80 )
+                                {     
+                                   videoPTS = readTimeStamp( &packet[payloadOffset+9] );     
+                                }   
+                                payloadOffset= payloadOffset+9+pesHeaderDataLen;   
+                                m_prescanForFrameType = true;
+                                adaptationLen= packet[4];
+                                adaptationFlags= packet[5];
+                            }
+                        }
+                    } 
+                    // Scan for Frame type
+                    if ( m_prescanForFrameType )
+                    {
+                        int i, imax;
+
+                        if ( m_prescanHaveRemainder )
+                        {
+                            unsigned char *remainder= m_prescanRemainder;
+
+                            memcpy( remainder+RBI_SCAN_REMAINDER_SIZE, packet+payloadOffset, RBI_SCAN_REMAINDER_SIZE );
+
+                            for( i= 0; i < RBI_SCAN_REMAINDER_SIZE; ++i )
+                            {
+                                if ( (remainder[i] == 0x00) && (remainder[i+1] == 0x00) && (remainder[i+2] == 0x01) )
+                                {
+                                   processStartCode( &remainder[i], m_prescanForFrameType, 2*RBI_SCAN_REMAINDER_SIZE-i, 0 );
+                                }
+                            }
+
+                           m_prescanHaveRemainder= false;
+                        }
+
+                        if ( m_prescanForFrameType )
+                        {
+                           // If we are at the last packet in the buffer we need to stop scanning at the point
+                           // where we can no longer access all needed start code bytes.
+                           //imax= ((packet+m_packetSize < inputEnd) ? m_packetSize : m_packetSize-RBI_SCAN_REMAINDER_SIZE)-m_ttsSize;
+                           imax= m_packetSize-RBI_SCAN_REMAINDER_SIZE-m_ttsSize;
+
+                            for( i= payloadOffset; i < imax; ++i )
+                            {
+                               if ( (packet[i] == 0x00) && (packet[i+1] == 0x00) && (packet[i+2] == 0x01) )
+                                {
+                                    processStartCode( &packet[i], m_prescanForFrameType, imax-i, i );
+
+                                    if ( !m_prescanForFrameType )
+                                    {
+                                       break;
+                                    }
+                                }
+                            }
+
+                            if ( imax != m_packetSize-m_ttsSize )
+                            {
+                                m_prescanHaveRemainder= true;
+                                memcpy( m_prescanRemainder, packet+m_packetSize-RBI_SCAN_REMAINDER_SIZE-m_ttsSize, RBI_SCAN_REMAINDER_SIZE );
+                            }
+                        }
+                        if ( m_frameType != 0 && (m_transitioningToAd || m_mapping) )
+                        {
+                            if( m_frameType ==1 && videoPTS != 0 ) 
+                            {
+                                long long diffPTS = abs(m_mapSpliceInPTS - videoPTS);
+                                if( diffPTS < prevDiffPTS )
+                                {
+                                    prevDiffPTS = diffPTS;    
+                                    if ( (adaptationLen > 0) && adaptationFlags & 0x40 )
+                                    {
+                                        // Random access point
+                                        DEBUG("Random access point detected, videoPTS %llx Splice In PTS %llx", videoPTS, m_mapSpliceInPTS );
+                                        if ( PTS_IN_RANGE( videoPTS, (m_mapSpliceInPTS - (8*90000/VIDEO_FRAME_RATE)), m_mapSpliceInAbortPTS ) )
+                                        {
+                                            DEBUG("Detected Alternate Video Splice point frame PTS: %llx  Exit frame PTS %llx ", videoPTS, prevVideoPTS);
+                                            alternateVideoSplicePointExitFramePTS = prevVideoPTS;
+                                            alternateVideoSplicePointPTS = videoPTS;
+                                            if(!m_insertSrc && prevVideoPTS == -1) // For Fixed spots
+                                            {
+                                                DEBUG("Stopping Fixed spot tracking at Outpoint detection, I frame is the first frame in the buffer, Outpoint Frame PTS %llX ", alternateVideoSplicePointPTS);
+                                                m_mapSpliceUpdatedOutPTS = alternateVideoSplicePointPTS;
+                                                stopInsertion();
+                                            }
+                                        }                                
+                                    }
+                                }
+                            }   
+                            adaptationLen= -1;
+                            adaptationFlags= -1;
+                            prevVideoPTS = videoPTS;
+                        }                     
+                    } // Done scanning for frame type
+                }               
+            }
+            packet += m_packetSize;
+        }
+        if (alternateVideoSplicePointPTS != -1)
+        {        
+            if ( m_insertSrc )
+            {
+                INFO("Modifying splice in point PTS for replace spot %llx previous PTS %llx", alternateVideoSplicePointPTS, m_mapSpliceInPTS );
+                m_mapSpliceInPTS = alternateVideoSplicePointPTS;
+            }
+        }
+   }
+
+   m_frameType = 0;
+   
+   packet= packets+m_ttsSize;
    while( packet < bufferEnd )
    {
       if ( packet < inputEnd )
@@ -5098,7 +6082,7 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
          {
             m_continuityCounters[pid]= (packet[3]&0x0F);
          }
-         
+
          if ( pid == 0 )
          {
             payloadStart= (packet[1] & 0x40);
@@ -5187,7 +6171,7 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
                  payloadStart = (packet[1] & 0x40);
                  if ( payloadStart )
                  {
-                     //fix limitation -> pointer field is assumed to be zero. If it isn't, parser will behave in an undefined manner.
+                     //TODO: fix limitation -> pointer field is assumed to be zero. If it isn't, parser will behave in an undefined manner.
                      int tableid= packet[payloadOffset+1];
                      if ( tableid == 0x02 )
                      {
@@ -5311,7 +6295,7 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
 
                              /*Evaluate whether a full section is now available. Process it.*/
                              TRACE1("RBIStream: section write offset = %d", ptr->m_sectionWriteOffset);
-                             if( ptr->m_sectionWriteOffset == (ptr->m_sectionLength + 4) )//Fix this condition check. It would fail if pointer_field is non-zero 
+                             if( ptr->m_sectionWriteOffset == (ptr->m_sectionLength + 4) )//TODO: Fix this condition check. It would fail if pointer_field is non-zero 
                              {
                                  DEBUG("RBIStream: complete PMT section is now available. Parsing begins.");
                                  processPMTSection(ptr->m_section, ptr->m_sectionLength);
@@ -5561,7 +6545,7 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
 
                       /*Evaluate whether a full section is now available. Process it.*/
                       TRACE1("RBIStream: section write offset = %d", ptr->m_sectionWriteOffset);
-                      if( ptr->m_sectionWriteOffset == (ptr->m_sectionLength + 4) )//Fix this condition check. It would fail if pointer_field is non-zero 
+                      if( ptr->m_sectionWriteOffset == (ptr->m_sectionLength + 4) )//TODO: Fix this condition check. It would fail if pointer_field is non-zero 
                       {
                          DEBUG("RBIStream: complete SCTE-35 section is now available. Parsing begins.");
                          processSCTE35Section(ptr->m_section, ptr->m_sectionLength);
@@ -5602,23 +6586,26 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
                      {
                         long long offset= m_frameStartOffset= m_streamOffset+(packetCount*m_packetSize);
                         m_currentPCR= readPCR( &packet[6] );
+                        
+                        m_lastPCRTTSValue = ((packet[-4] << 24) | (packet[-3] << 16) | (packet[-2] << 8) | packet[-1]);
+
                         if ( m_sample1PCR == -1LL )
                         {
                            m_sample1PCR= m_currentPCR;
                            m_sample1PCROffset= offset;
                         }
                         else if ( m_sample2PCR == -1LL )
-                        {
-                           if ( (m_currentPCR-m_sample1PCR > 0) && (offset-m_sample1PCROffset > 200000) )
+                        {                           
+                           if (m_currentPCR-m_sample1PCR > 3000)
                            {
                               double timeDiff;
                               double bitDiff;
-                              
+
                               m_sample2PCR= m_currentPCR;
                               m_sample2PCROffset= offset;
                               DEBUG("PCR sample1: pcr %llx offset %llx sample2 %llx offset %llx", 
                                     m_sample1PCR, m_sample1PCROffset, m_sample2PCR, m_sample2PCROffset );
-                              
+                                
 
                               if ( m_currentPCR-m_sample1PCR < 1000*90LL )
                               {
@@ -5654,7 +6641,7 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
                         {
                            if ( m_currentPTS != -1LL )
                            {
-                                 DEBUG("randomAccess point: pts %llx", m_currentPTS );
+                                 DEBUG("randomAccess point: pts %llx", m_currentPTS );                                 
                            }
                            else
                            {
@@ -5715,29 +6702,69 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
                                  }
                               }
 
-                              if ( (m_randomAccess || m_startOfSequence || (m_mapEndPending && m_backToBack)) &&  m_insertSrc &&
-                                    PTS_IN_RANGE( m_currentPTS, (m_mapSpliceOutPTS - m_splice_returnToNetwork_offset), m_mapSpliceOutAbortPTS )
+                              if ( (m_randomAccess || m_startOfSequence /* || (m_mapEndPending && m_backToBack) */) &&  m_insertSrc &&
+                                    PTS_IN_RANGE( m_currentPTS, (m_mapSpliceInPTS - m_splicePTS_offset), m_mapSpliceInAbortPTS ) && !m_filterAudio
                                  )
                               {
                                  INFO("map ending: at random access point (%d,%d,%d)", m_randomAccess, m_startOfSequence, m_backToBack);
-                                 if ( !m_backToBack )
-                                 {
+                                if( !m_backToBack )
+                                {
                                     m_filterAudio= true;
-                                    m_filterAudioStopPTS= m_mapSpliceOutPTS;
-                                    m_filterAudioStop2PTS= ( (m_filterAudioStopPTS + 60000LL*90LL)& MAX_90K);
-                                    TRACE3("map ending: start filtering network audio");
-                                 }
-                                 if ( m_haveCompatiblePCROffsets )
-                                 {
-                                    TRACE3("map ending: continuing to pass Ad audio");
-                                    m_mapEnding= true;
-                                    m_mapEndingNeedVideoEOF= m_backToBack;
-                                 }
-                                 if ( !m_mapEnding )
-                                 {
-                                    stopInsertion();
-                                 }
-                                 m_mapEditGOP= true;
+                                    m_filterAudioStopPTS= m_mapSpliceInPTS;
+                                    m_filterAudioStop2PTS= ( (m_filterAudioStopPTS + 1000LL*90LL)& MAX_90K);
+                                    m_transitioningToNetwork = true; 
+                                    m_determineNetAC3FrameSizeDuration = true;
+                                    m_mapping = false;   
+                                    m_mapEditGOP= true;
+                                    // Updating the outpoint for the next ad spot
+                                    m_mapSpliceUpdatedOutPTS = m_currentPTS; 
+                                    
+                                    int availableNullPacketsSize = ((packet - m_ttsSize) + m_packetSize - packets);
+                                    unsigned char *nullPacket = packets + m_ttsSize;
+                                    DEBUG("Replacing null packets with Ad audio packet during in point detection available NullPackets Size %d ", availableNullPacketsSize );
+
+                                    int replacePacketCount = 0;
+                                    while ( availableNullPacketsSize/m_packetSize > 0 )
+                                    {
+                                        if( (nullPacket[3] == 0xAA || replacePacketCount > 0))
+                                        {
+                                            bool netAudioPacket = false;
+                                            if( nullPacket[3] == 0xAA && replacePacketCount == 0 )
+                                            {
+                                                netAudioPacket = true;
+                                            }
+                                            int byteCount = getInsertionAudioDataDuringTransitionBackToNetwork(nullPacket);
+                                            int mappedPid = (((nullPacket[1] << 8) | nullPacket[2]) & 0x1FFF); 
+
+                                            if (byteCount == -1) {
+                                                m_transitioningToNetwork = false;                                                
+                                                break;
+                                            }
+                                            else
+                                            {
+                                                lastAdAudioPacket = nullPacket;                                
+                                            }
+                                            if(replacePacketCount > 0)
+                                            {
+                                                --replacePacketCount;
+                                            }
+                                            else if ( netAudioPacket )
+                                            {
+                                                replacePacketCount = (adAC3FrameInfo.size/184);
+                                                netAudioPacket = false;
+                                            }
+                                        }
+                                        availableNullPacketsSize -= m_packetSize;
+                                        if(availableNullPacketsSize/m_packetSize > 0)
+                                        {
+                                            nullPacket += m_packetSize;
+                                        }
+                                    }                                    
+                                    TRACE3("map ending: start filtering network audio");                                    
+                                }
+                                TRACE3("map ending: continuing to pass Ad audio");
+                                m_mapEnding= true;
+                                m_mapEndingNeedVideoEOF= m_backToBack;                                
                               }
                               else
                               {
@@ -5748,11 +6775,11 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
                                         (m_mapEndPendingPrev != m_mapEndPending)) \
                                        )
                                     {
-                                       if(PTS_IN_RANGE( m_currentPTS, m_mapSpliceOutPTS, m_mapSpliceOutAbortPTS ))
+                                       if(PTS_IN_RANGE( m_currentPTS, m_mapSpliceInPTS, m_mapSpliceInAbortPTS ))
                                        {
-                                          INFO("m_randomAccess[%d] m_startOfSequence[%d] m_mapEndPending[%d] m_backToBack[%d] m_currentPTS[%llx] m_mapSpliceOutPTS[%llx] m_mapSpliceOutAbortPTS[%llx] m_mapStartPending[%d] m_mapStartArmed[%d] m_mapEndPending[%d]",
-                                             m_randomAccess, m_startOfSequence, m_mapEndPending, m_backToBack, m_currentPTS, m_mapSpliceOutPTS,
-                                             m_mapSpliceOutAbortPTS, m_mapStartPending, m_mapStartArmed, m_mapEndPending );
+                                          INFO("m_randomAccess[%d] m_startOfSequence[%d] m_mapEndPending[%d] m_backToBack[%d] m_currentPTS[%llx] m_mapSpliceInPTS[%llx] m_mapSpliceInAbortPTS[%llx] m_mapStartPending[%d] m_mapStartArmed[%d] m_mapEndPending[%d]",
+                                             m_randomAccess, m_startOfSequence, m_mapEndPending, m_backToBack, m_currentPTS, m_mapSpliceInPTS,
+                                             m_mapSpliceInAbortPTS, m_mapStartPending, m_mapStartArmed, m_mapEndPending );
                                        }
                                     }
                                  }
@@ -5760,56 +6787,77 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
 
                               if ( m_mapStartPending )
                               {
-                                 TRACE4("m_currentPTS %llx m_mapSpliceInPTS %llx m_mapSpliceInAbortPTS %llx m_mapSpliceOutPTS %llx",
-                                        m_currentPTS, m_mapSpliceInPTS, m_mapSpliceInAbortPTS, m_mapSpliceOutPTS );
-                                 if ( m_mapSpliceInPTS == -1LL )
+                                 TRACE4("m_currentPTS %llx m_mapSpliceOutPTS %llx m_mapSpliceOutAbortPTS %llx m_mapSpliceInPTS %llx",
+                                        m_currentPTS, m_mapSpliceOutPTS, m_mapSpliceOutAbortPTS, m_mapSpliceInPTS );
+                                 if( !m_backToBackPrev )
                                  {
-                                    m_mapStartPTS= m_currentPTS+4500;
-                                    m_mapStartPending= false;
-                                    m_mapStartArmed= true;
-                                    INFO("map start armed: arm PTS %llx", m_mapStartPTS );
-                                 }
-                                 else if ( PTS_IN_RANGE( m_currentPTS, m_mapSpliceInPTS, m_mapSpliceOutPTS ) )
-                                 {
-                                    if(m_currentPTS >= m_mapSpliceInAbortPTS)
+                                    if ( m_mapSpliceOutPTS == -1LL )
                                     {
-                                        ERROR("missed start: CurrentPTS Exceeded SpliceInAbortPTS : m_currentPTS %llx m_mapSpliceInPTS %llx m_mapSpliceInAbortPTS %llx m_mapSpliceOutPTS %llx m_bitRate %d m_mapStartPending %d m_mapEndPending %d m_mapping %d",
-                                         m_currentPTS, m_mapSpliceInPTS, m_mapSpliceInAbortPTS, m_mapSpliceOutPTS, m_bitRate, m_mapStartPending, m_mapEndPending, m_mapping );
-                                        if ( m_events )
+                                       m_mapStartPTS= m_currentPTS+4500;
+                                       m_mapStartPending= false;
+                                       if( !m_backToBackPrev )
+                                       {
+                                           m_mapStartArmed= true;
+                                       }                                    
+                                       INFO("map start armed: arm PTS %llx", m_mapStartPTS );
+                                    }
+                                    else if ( PTS_IN_RANGE( m_currentPTS, (m_mapSpliceOutPTS - m_splicePTS_offset), m_mapSpliceInPTS ) )
+                                    {
+                                       if(m_currentPTS >= m_mapSpliceOutAbortPTS && m_insertSrc)
                                         {
-                                           m_events->insertionError( this, RBI_DetailCode_unableToSplice_missed_spotWindow );
+                                            ERROR("missed start: CurrentPTS Exceeded m_insertSrc %x SpliceOutAbortPTS : m_currentPTS %llx m_mapSpliceOutPTS %llx m_mapSpliceOutAbortPTS %llx m_mapSpliceInPTS %llx m_bitRate %d m_mapStartPending %d m_mapEndPending %d m_mapping %d", 
+                                                                                        m_insertSrc, m_currentPTS, m_mapSpliceOutPTS, m_mapSpliceOutAbortPTS, m_mapSpliceInPTS, m_bitRate, m_mapStartPending, m_mapEndPending, m_mapping );
+                                            if ( m_events )
+                                            {
+                                               m_events->insertionError( this, RBI_DetailCode_unableToSplice_missed_spotWindow );
+                                            }
+                                            stopInsertion();
                                         }
-                                        stopInsertion();
+                                       else
+                                        {
+                                            m_mapStartPTS= m_currentPTS;
+                                            m_mapStartPCR= m_currentPCR;                              
+                                            m_mapStartPending= false;
+                                            m_insertStartTime= getCurrentTimeMicro();
+                                            m_mapStartArmed= true;
+
+                                            if ( m_ttsSize && (m_ttsInsert == 0xFFFFFFFF) )
+                                            {
+                                               m_ttsInsert= ((packet[-4]<<24)|(packet[-3]<<16)|(packet[-2]<<8)|packet[-1]);
+                                               DEBUG("map start armed: ttsInsert %08X", m_ttsInsert);
+                                            }
+
+                                            INFO("map start armed: a: trigger PTS %llx arm PTS %llx PCR %llx", m_mapSpliceOutPTS, m_mapStartPTS, m_mapStartPCR );                                    
+                                            if( m_insertSrc && !m_backToBackPrev )
+                                            {
+                                                m_transitioningToAd = true;
+                                            } 
+                                        }  
+                                    }
+                                }
+                                else
+                                {
+                                    m_mapStartPTS= m_mapSpliceOutPTS;                                    
+                                    m_mapStartPending= false;
+                                    m_insertStartTime= getCurrentTimeMicro();
+                                    m_mapping= true;
+                                    m_trackContinuityCountersEnable= false;                                    
+                                    m_continuityCounters[m_videoPid]= ((m_continuityCounters[m_videoPid]-1)&0xF);
+                                    if ( m_events )
+                                    {
+                                       m_events->insertionStarted( this );
                                     }
                                     else
                                     {
-                                       long long startDiff;
-                                       long long spotDuration;
-                                       double rateFactor;
-
-                                       m_mapStartPTS= m_currentPTS;
-                                       m_mapStartPCR= m_currentPCR;
-                                       m_mapStartPending= false;
-                                       m_mapStartArmed= true;
-
-                                       if ( m_ttsSize && (m_ttsInsert == 0xFFFFFFFF) )
-                                       {
-                                          m_ttsInsert= ((packet[-4]<<24)|(packet[-3]<<16)|(packet[-2]<<8)|packet[-1]);
-                                          TRACE3("map start armed: ttsInsert %08X", m_ttsInsert);
-                                       }
-
-                                       startDiff= (m_mapStartPTS-m_mapSpliceInPTS)&MAX_90K;
-                                       spotDuration= (m_mapSpliceOutPTS-m_mapSpliceInPTS)&MAX_90K;
-                                       rateFactor= (double)startDiff/(double)spotDuration;
-                                       m_rate= 1.0+rateFactor;
-
-                                       INFO("map start armed: a: trigger PTS %llx arm PTS %llx rate %f", m_mapSpliceInPTS, m_mapStartPTS, m_rate );
+                                       ERROR("m_events is NULL");
                                     }
-                                 }
+                                    m_haveSegmentBasePCRAfterTransitionToAd = true;
+                                    INFO("map start armed: back 2 back use case out PTS %llx ", m_mapSpliceOutPTS);
+                                }
                                  if ( m_mapStartArmed )
                                  {
-                                    INFO("m_currentPTS %llx m_mapSpliceInPTS %llx m_mapSpliceInAbortPTS %llx m_mapSpliceOutPTS %llx m_bitRate %d m_mapStartPending %d m_mapEndPending %d m_mapping %d",
-                                         m_currentPTS, m_mapSpliceInPTS, m_mapSpliceInAbortPTS, m_mapSpliceOutPTS, m_bitRate, m_mapStartPending, m_mapEndPending, m_mapping );
+                                    INFO("m_currentPTS %llx m_mapSpliceOutPTS %llx m_mapSpliceOutAbortPTS %llx m_mapSpliceInPTS %llx m_bitRate %d m_mapStartPending %d m_mapEndPending %d m_mapping %d",
+                                         m_currentPTS, m_mapSpliceOutPTS, m_mapSpliceOutAbortPTS, m_mapSpliceInPTS, m_bitRate, m_mapStartPending, m_mapEndPending, m_mapping );
                                  }
                               }
                               m_randomAccessPrev = m_randomAccess;
@@ -5823,16 +6871,16 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
                            {
                               long long afterPTS;
 
-                              afterPTS= (m_mapSpliceOutPTS + 60000*90LL)&MAX_90K;
+                              afterPTS= (m_mapSpliceInPTS + 60000*90LL)&MAX_90K;
 
                               if ( m_insertSrc )
                               {
-                                 if ( PTS_IN_RANGE( m_currentPTS, m_mapSpliceInAbortPTS, afterPTS ) )
+                                 if ( PTS_IN_RANGE( m_currentPTS, m_mapSpliceOutAbortPTS, afterPTS ) )
                                  {
                                     // This is a "replace" spot, but we haven't found a random access point
                                     // before our slice-in abort PTS.  End the spot with an error.
-                                    ERROR("missed start: m_currentPTS %llx m_mapSpliceInPTS %llx m_mapSpliceInAbortPTS %llx m_mapSpliceOutPTS %llx", m_currentPTS, m_mapSpliceInPTS, m_mapSpliceInAbortPTS, m_mapSpliceOutPTS );
-                                    m_leadTime= ((m_currentPTS - m_mapSpliceInAbortPTS)&MAX_90K)/90LL;
+                                    ERROR("missed start: m_currentPTS %llx m_mapSpliceOutPTS %llx m_mapSpliceOutAbortPTS %llx m_mapSpliceInPTS %llx", m_currentPTS, m_mapSpliceOutPTS, m_mapSpliceOutAbortPTS, m_mapSpliceInPTS );
+                                    m_leadTime= ((m_currentPTS - m_mapSpliceOutAbortPTS)&MAX_90K)/90LL;
                                     if ( m_events )
                                     {
                                        m_events->insertionError( this, RBI_DetailCode_unableToSplice_missed_spotWindow );
@@ -5842,24 +6890,24 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
                               }
                               else
                               {
-                                 if ( PTS_IN_RANGE( m_currentPTS, m_mapSpliceInAbortPTS, m_mapSpliceOutPTS ) )
+                                 if ( PTS_IN_RANGE( m_currentPTS, m_mapSpliceOutAbortPTS, m_mapSpliceInPTS ) )
                                  {
                                     // This is a "fixed" spot.  If we haven't found a random access point
                                     // be we've hit the splice-in abort PTS then just proceed with arming
                                     m_mapStartPTS= m_currentPTS;
                                     m_mapStartPending= false;
                                     m_mapStartArmed= true;
-                                    INFO("map start armed: b: trigger PTS %llx arm PTS %llx", m_mapSpliceInPTS, m_mapStartPTS );
+                                    INFO("map start armed: b: trigger PTS %llx arm PTS %llx", m_mapSpliceOutPTS, m_mapStartPTS );
                                  }
                                  else
                                  {
-                                    if ( PTS_IN_RANGE( m_currentPTS, m_mapSpliceOutPTS, afterPTS ) )
+                                    if ( PTS_IN_RANGE( m_currentPTS, m_mapSpliceInPTS, afterPTS ) )
                                     {
                                        // This is a "fixed" spot and we have completely missed the spot window.
                                        // End the spot with an error.
-                                       ERROR("missed spot window: m_currentPTS %llx m_mapSpliceInPTS %llx m_mapSpliceOutPTS %llx",
-                                             m_currentPTS, m_mapSpliceInPTS, m_mapSpliceOutPTS );
-                                       m_leadTime= ((m_currentPTS - m_mapSpliceOutPTS)&MAX_90K)/90LL;
+                                       ERROR("missed spot window: m_currentPTS %llx m_mapSpliceOutPTS %llx m_mapSpliceInPTS %llx",
+                                             m_currentPTS, m_mapSpliceOutPTS, m_mapSpliceInPTS );
+                                       m_leadTime= ((m_currentPTS - m_mapSpliceInPTS)&MAX_90K)/90LL;
                                        if ( m_events )
                                        {
                                           m_events->insertionError( this, RBI_DetailCode_unableToSplice_missed_spotWindow );
@@ -5879,18 +6927,20 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
                                         (m_mapEndPendingPrev != m_mapEndPending)) \
                                        )
                                  {
-                                    INFO("m_randomAccess[%d] m_startOfSequence[%d] m_mapEndPending[%d] m_backToBack[%d] m_currentPTS[%llx] m_mapSpliceOutAbortPTS[%llx] m_mapSpliceOutAbort2PTS[%llx] PTS_IN_RANGE[%d]",
-                                       m_randomAccess, m_startOfSequence, m_mapEndPending, m_backToBack, m_currentPTS, m_mapSpliceOutAbortPTS,
-                                       m_mapSpliceOutAbort2PTS, PTS_IN_RANGE( m_currentPTS, m_mapSpliceOutAbortPTS, m_mapSpliceOutAbort2PTS ) );
+                                    INFO("m_randomAccess[%d] m_startOfSequence[%d] m_mapEndPending[%d] m_backToBack[%d] m_currentPTS[%llx] m_mapSpliceInAbortPTS[%llx] m_mapSpliceInAbort2PTS[%llx] PTS_IN_RANGE[%d]",
+                                       m_randomAccess, m_startOfSequence, m_mapEndPending, m_backToBack, m_currentPTS, m_mapSpliceInAbortPTS,
+                                       m_mapSpliceInAbort2PTS, PTS_IN_RANGE( m_currentPTS, m_mapSpliceInAbortPTS, m_mapSpliceInAbort2PTS ) );
                                  }
 
-                                 if ( PTS_IN_RANGE( m_currentPTS, m_mapSpliceOutAbortPTS, m_mapSpliceOutAbort2PTS ) ||
-                                      (m_currentPTS >= m_mapSpliceOutAbort2PTS))
+                                 if ( (PTS_IN_RANGE( m_currentPTS, m_mapSpliceInAbortPTS, m_mapSpliceInAbort2PTS ) || (m_currentPTS >= m_mapSpliceInAbort2PTS)) 
+                                        && !m_filterAudio )
                                  {
                                     // This is a "replace" spot, but we haven't found a random access point
                                     // in our splice-out window.  End the spot now.
                                     INFO("map ending: not at random access point : expect macroblocking");
                                     stopInsertion();
+                                    m_filterAudio = false;
+                                    m_mapEditGOP = true;
                                  }
                               }
                            }
@@ -5901,12 +6951,11 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
                                    m_mapStartArmed && (m_bitRate != 0)
                                    #ifndef XONE_STB 
                                    &&
-                                   m_haveCompatiblePCROffsets ||
                                    (
                                      m_backToBackPrev ||
                                      (
                                        (m_audioComponentCount > 0) &&
-                                       PTS_IN_RANGE( m_currentAudioPTS, m_mapSpliceInPTS, m_mapSpliceInAbortPTS )
+                                       PTS_IN_RANGE( m_currentAudioPTS, (m_mapSpliceOutPTS - m_spliceAudioPTS_offset), m_mapSpliceOutAbortPTS )
                                      )
                                    )
                                    #endif
@@ -5914,18 +6963,11 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
                               {
                                  if ( !m_mapping )
                                  {
-                                    m_insertStartTime= getCurrentTimeMicro();
-                                    INFO("m_backToBackPrev %d m_haveCompatiblePCROffsets %d", m_backToBackPrev, m_haveCompatiblePCROffsets );
-                                    if ( m_backToBackPrev || !m_haveCompatiblePCROffsets )
-                                    {
-                                       m_mapStartArmed= false;
-                                    }
-                                    else
-                                    {
-                                       INFO("map start: continuing to pass network audio");
-                                    }
+                                    INFO("m_backToBackPrev %d" , m_backToBackPrev);
+                                    m_mapStartArmed= false;
+                                    
                                     m_mapping= true;
-                                    m_trackContinuityCountersEnable= false;
+                                    m_trackContinuityCountersEnable= false;                                    
                                     m_continuityCounters[m_videoPid]= ((m_continuityCounters[m_videoPid]-1)&0xF);
                                     m_ttsInsert= 0xFFFFFFFF;
                                     if ( m_ttsSize && (m_ttsInsert == 0xFFFFFFFF) )
@@ -5933,27 +6975,14 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
                                        m_ttsInsert= ((packet[-4]<<24)|(packet[-3]<<16)|(packet[-2]<<8)|packet[-1]);
                                        INFO("map start armed: ttsInsert %08X", m_ttsInsert);
                                     }
-
-                                    #ifndef XONE_STB 
-                                    if ( !m_backToBackPrev && !m_haveCompatiblePCROffsets )
-                                    {
-                                       long long startDiff;
-                                       long long spotDuration;
-                                       double rateFactor;
-
-                                       startDiff= (m_currentPTS-m_mapSpliceInPTS)&MAX_90K;
-                                       spotDuration= (m_mapSpliceOutPTS-m_mapSpliceInPTS)&MAX_90K;
-                                       rateFactor= (double)startDiff/(double)spotDuration;
-                                       m_rate= 1.0+rateFactor;
-
-                                       INFO("map start: trigger PTS %llx arm PTS %llx rate %f", m_mapSpliceInPTS, m_mapStartPTS, m_rate );
-
-                                       m_mapStartPTS= m_currentPTS;
-                                       m_mapStartPCR= m_currentPCR;
-                                       INFO("update m_mapStartPTS: %llx m_mapStartPCR: %llx\n", m_mapStartPTS, m_mapStartPCR );
+                                    if( m_insertSrc )
+                                    {                                        
+                                        trimSize = size - ((packet - m_ttsSize) + m_packetSize - packets);  
+                                        trimmedCurrentPCR = m_currentPCR;
+                                        trimmedPCRTTSValue = m_lastPCRTTSValue;
+                                        DEBUG("network audio reached splice-out PTS m_currentAudioPTS %llx  m_mapSpliceOutPTS %llx trimSize %d trimmedCurrentPCR %llx trimmedPCRTTSValue %08X", m_currentAudioPTS, m_mapSpliceOutPTS, trimSize, trimmedCurrentPCR, trimmedPCRTTSValue );        
                                     }
-                                    #endif
-
+                                    
                                     if ( m_events )
                                     {
                                        m_events->insertionStarted( this );
@@ -5964,23 +6993,23 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
                                     }
                                  }
                                  else if ( (m_audioComponentCount > 0) &&
-                                           PTS_IN_RANGE( m_currentAudioPTS, m_mapSpliceInPTS, m_mapSpliceInAbortPTS ) )
+                                           PTS_IN_RANGE( m_currentAudioPTS, (m_mapSpliceOutPTS - m_spliceAudioPTS_offset), m_mapSpliceOutAbortPTS ) )
                                  {
-                                    m_mapStartArmed= false;
-                                    INFO("map start: network audio reached splice-in PTS");
+                                    m_mapStartArmed= false;                                    
+                                    INFO("map start: network audio reached splice-out PTS");
                                  }
-                              }
-                              else
-                              {
-                                 if( (m_currentAudioPTS >= m_mapSpliceInAbortPTS) && m_mapStartArmed && (m_bitRate != 0) && !m_haveCompatiblePCROffsets && !m_backToBackPrev && (m_audioComponentCount > 0) )
+                                 else
                                  {
-                                    ERROR("missed start: m_currentAudioPTS exceeded m_mapSpliceInAbortPTS : m_currentPTS %llx m_mapSpliceInPTS %llx m_mapSpliceInAbortPTS %llx m_mapSpliceOutPTS %llx m_mapStartPending %d m_mapEndPending %d m_mapping %d m_currentAudioPTS %llx",
-                                       m_currentPTS, m_mapSpliceInPTS, m_mapSpliceInAbortPTS, m_mapSpliceOutPTS, m_mapStartPending, m_mapEndPending, m_mapping, m_currentAudioPTS );
-                                    if ( m_events )
+                                    if( (m_currentAudioPTS >= m_mapSpliceOutAbortPTS) && m_mapStartArmed && (m_bitRate != 0) && !m_backToBackPrev && (m_audioComponentCount > 0) )
                                     {
-                                       m_events->insertionError( this, RBI_DetailCode_unableToSplice_missed_spotWindow );
+                                       ERROR("missed start: m_currentAudioPTS exceeded m_mapSpliceOutAbortPTS : m_currentPTS %llx m_mapSpliceOutPTS %llx m_mapSpliceOutAbortPTS %llx m_mapSpliceInPTS %llx m_mapStartPending %d m_mapEndPending %d m_mapping %d m_currentAudioPTS %llx",
+                                          m_currentPTS, m_mapSpliceOutPTS, m_mapSpliceOutAbortPTS, m_mapSpliceInPTS, m_mapStartPending, m_mapEndPending, m_mapping, m_currentAudioPTS );
+                                       if ( m_events )
+                                       {
+                                          m_events->insertionError( this, RBI_DetailCode_unableToSplice_missed_spotWindow );
+                                       }
+                                       stopInsertion();
                                     }
-                                    stopInsertion();
                                  }
                               }
                            }
@@ -6029,20 +7058,19 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
                               }
                            }
                         }
-                        
                         if ( imax != m_packetSize-m_ttsSize )
                         {
                            m_scanHaveRemainder= true;
                            memcpy( m_scanRemainder, packet+m_packetSize-RBI_SCAN_REMAINDER_SIZE-m_ttsSize, RBI_SCAN_REMAINDER_SIZE );
                         }
                      }
-               
+
                      if ( m_frameType != 0 )
                      {
                         if ( m_events )
                         {
                            m_events->foundFrame( this, m_frameType, m_frameStartOffset, m_currentPTS, m_currentPCR );
-                        }
+                        }                         
                      }    
                   }         
                }
@@ -6063,68 +7091,234 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
                }
             }
          }
-         else if ( m_filterAudio || m_mapStartArmed )
+         else if ( m_filterAudio || m_mapStartArmed || m_transitioningToAd)
          {
             if ( pid == m_audioPid )
-            {
-               payloadOffset= 4;
-               adaptation= ((packet[3] & 0x30)>>4);
-               payloadStart= (packet[1] & 0x40);
-               
-               if ( adaptation & 0x02 )
-               {
-                  payloadOffset += (1+packet[4]);
-               }
-               if ( adaptation & 0x01 )
-               {
-                  if ( payloadStart )
-                  {
-                     if ( (packet[payloadOffset] == 0x00) && (packet[payloadOffset+1] == 0x00) && (packet[payloadOffset+2] == 0x01) )
-                     {
-                        if ( packet[payloadOffset+7] & 0x80 )
-                        {
-                           m_currentAudioPTS= readTimeStamp( &packet[payloadOffset+9] );
-                           INFO("m_currentAudioPTS %llx", m_currentAudioPTS);
-                        }
-                     }
-                  }
-               }
-            }
-            if ( m_filterAudio )
-            {
-               if ( PTS_IN_RANGE( m_currentAudioPTS, m_filterAudioStopPTS, m_filterAudioStop2PTS ) )
-               {
-                  m_filterAudio= false;
-                  TRACE3("stop filtering network audio");
-                  if ( m_mapEnding )
-                  {
-                     TRACE3("Stop passing Ad audio");
-                     m_mapEnding= false;
-                  }
-               }
-            }
-            if ( m_filterAudio )
-            {
-               for( int i= 0; i < m_audioComponentCount; ++i )
-               {
-                  if ( pid == m_audioComponents[i].pid )
-                  {
-                     packet[1]= ((packet[1] & 0xE0) | 0x1F);
-                     packet[2]= 0xFF;
-                     break;
-                  }
-               }
-            }
-         }
+            {                
+                if(m_determineNetAC3FrameSizeDuration){
+                    payloadOffset = 4;
+                    adaptation = ((packet[3] & 0x30) >> 4);
 
-         if ( m_privateDataEnable && m_privateDataPids[pid] )
+                    if (adaptation & 0x02) {
+                        payloadOffset += (1 + packet[4]);
+                    }
+                    payloadStart = (packet[1] & 0x40);
+                    if ((adaptation & 0x01) && payloadStart && ((packet[payloadOffset] == 0x00) && (packet[payloadOffset + 1] == 0x00) && (packet[payloadOffset + 2] == 0x01))) {
+                        payloadOffset += (9 + packet[payloadOffset + 8]);
+                        getAC3FrameSizeDuration( packet, payloadOffset, &netAC3FrameInfo );
+                        if( netAC3FrameInfo.duration != -1 && netAC3FrameInfo.size != -1)
+                        {
+                            m_determineNetAC3FrameSizeDuration = false;
+                        }
+                    }
+                }
+                if( !m_determineNetAC3FrameSizeDuration )
+                {
+                    if (!m_transitioningToAd && m_mapStartArmed && m_insertSrc)
+                    {                        
+                        packet[1]= ((packet[1] & 0xE0) | 0x1F );
+                        packet[2]= 0xFF;
+                    }
+                    else
+                    {
+                        long long audioPTS = getAC3FramePTS( packet, &netAC3FrameInfo, m_currentAudioPTS);
+                        if (audioPTS != -1)
+                        {
+                            m_currentAudioPTS = audioPTS;
+                            if(m_insertSrc)
+                            {
+                                if ( (m_audioComponentCount > 0) &&
+                                        PTS_IN_RANGE( m_currentAudioPTS, (m_mapSpliceOutPTS - m_spliceAudioPTS_offset), m_mapSpliceOutAbortPTS ) )
+                                {
+                                    if( m_transitioningToAd )
+                                    {
+                                        int netCorrectedPESPacketLength = netAC3FrameInfo.frameCnt*netAC3FrameInfo.size + netAC3FrameInfo.pesHeaderDataLen + 3;
+                                        if( netAC3FrameInfo.pesPacketLengthMSB != 0 && netAC3FrameInfo.pesPacketLengthLSB != 0 )
+                                        {
+                                            *(netAC3FrameInfo.pesPacketLengthMSB) = (unsigned char)((netCorrectedPESPacketLength >> 8) & 0xFF);
+                                            *(netAC3FrameInfo.pesPacketLengthLSB) = (unsigned char) (netCorrectedPESPacketLength & 0xFF);
+                                        }
+                                        if(netAC3FrameInfo.byteCnt >= 1)
+                                        {
+                                            unsigned char packetCopy[MAX_PACKET_SIZE];
+                                            memcpy( packetCopy, packet, m_packetSize-m_ttsSize );
+
+                                            packet[3] |= 0x30;                                                      
+                                            packet[4] = netAC3FrameInfo.byteCnt - 1;
+                                            if (netAC3FrameInfo.byteCnt > 1)
+                                            {
+                                                packet[5] = 0x00;
+                                                for( int i = 0 ; i < netAC3FrameInfo.byteCnt -2; i++ )
+                                                {                                                    
+                                                    packet[6+i] = 0xFF;
+                                                }                                                        
+                                            } 
+                                            for( int i = 4 + netAC3FrameInfo.byteCnt, j = 4; i < 188; i++, j++ )
+                                            {
+                                                packet[i] = packetCopy[j];
+                                            }                                            
+                                        }
+                                        else
+                                        {
+                                            for( int i = 188 - netAC3FrameInfo.byteCnt; i < 188; i++ )
+                                            {
+                                                packet[i] = 0xFF;
+                                            } 
+                                        }
+
+                                        m_transitioningToAd = false;
+                                    }
+                                }
+                                else if( PTS_IN_RANGE(m_currentAudioPTS, m_filterAudioStopPTS, m_filterAudioStop2PTS) )
+                                {
+                                    long long filterAudioStop3PTS= ( (m_filterAudioStop2PTS + 1000LL*90LL)& MAX_90K);
+                                    bool stopAudioFilter = false;
+                                    if ( adAC3FrameInfo.syncByteDetectedInPacket )
+                                    {
+                                        if( lastAdAudioPacket != 0 && *lastAdAudioPacket == 0x47 && adAC3FrameInfo.byteCnt >= 1)
+                                        {
+                                            unsigned char packetCopy[MAX_PACKET_SIZE];
+                                            memcpy( packetCopy, lastAdAudioPacket, m_packetSize-m_ttsSize );
+
+                                            *(lastAdAudioPacket+3) |= 0x30;                                    
+                                            for( int i = 4 + adAC3FrameInfo.byteCnt, j = 4; i < 188; i++, j++ )
+                                            {
+                                                *(lastAdAudioPacket+i) = packetCopy[j];
+                                            }
+                                            *(lastAdAudioPacket+4) = adAC3FrameInfo.byteCnt - 1;
+                                            if (adAC3FrameInfo.byteCnt > 1)
+                                            {
+                                                *(lastAdAudioPacket+5) = 0x00;
+                                                for( int i = 0 ; i < adAC3FrameInfo.byteCnt -2; i++ )
+                                                {
+                                                    *(lastAdAudioPacket+6+i) = 0xFF;
+                                                }                                                        
+                                            }
+                                        }
+                                        int adCorrectedPESPacketLength = adAC3FrameInfo.frameCnt*adAC3FrameInfo.size + adAC3FrameInfo.pesHeaderDataLen + 3;
+                                        if( adAC3FrameInfo.pesPacketLengthMSB != 0 && adAC3FrameInfo.pesPacketLengthLSB != 0 )
+                                        {
+                                            *(adAC3FrameInfo.pesPacketLengthMSB) = (unsigned char)((adCorrectedPESPacketLength >> 8) & 0xFF);
+                                            *(adAC3FrameInfo.pesPacketLengthLSB) = (unsigned char) (adCorrectedPESPacketLength & 0xFF);
+                                        }
+                                        stopAudioFilter = true;
+                                    }
+                                    else if( PTS_IN_RANGE(m_currentAudioPTS, m_filterAudioStop2PTS, filterAudioStop3PTS) )
+                                    {
+                                        DEBUG("In audio in point detected using filterAudioStop3PTS");
+                                        stopAudioFilter = true;
+                                    }
+
+                                    if(stopAudioFilter)
+                                    {
+                                        payloadStart = (packet[1] & 0x40);
+                                        if( !payloadStart && (184 - netAC3FrameInfo.byteCnt) >= 2)
+                                        {
+                                            packet[1] |= 0x40;
+                                            packet[3] |= 0x30;
+                                            packet[5] = 0x80;
+                                            int numOfStuffingBytes = 0;
+
+                                            if((184 - netAC3FrameInfo.byteCnt) >= 11 )
+                                            {
+                                                packet[4] = 188 - netAC3FrameInfo.byteCnt - 14;
+                                                numOfStuffingBytes = 184 - netAC3FrameInfo.byteCnt -11;
+                                                packet[6+numOfStuffingBytes] = 0x0;
+                                                packet[7+numOfStuffingBytes] = 0x0;
+                                                packet[8+numOfStuffingBytes] = 0x1;
+                                                packet[9+numOfStuffingBytes] = 0xBD;
+                                                int pesPacketLength = netAC3FrameInfo.pesPacketLength - (netAC3FrameInfo.frameCnt*netAC3FrameInfo.size) - netAC3FrameInfo.pesHeaderDataLen;
+                                                packet[10+numOfStuffingBytes] = (pesPacketLength >> 8) & 0xFF;
+                                                packet[11+numOfStuffingBytes] = pesPacketLength & 0xFF;
+                                                packet[12+numOfStuffingBytes] = 0x84;
+                                                packet[13+numOfStuffingBytes] = 0x0;
+                                                packet[14+numOfStuffingBytes] = 0x0;                                   
+                                            }
+                                            else
+                                            {
+                                                packet[4] = 188 - netAC3FrameInfo.byteCnt - 5;
+                                                numOfStuffingBytes = 184 - netAC3FrameInfo.byteCnt -2;
+                                            }
+
+                                            for( int i = 0 ; i < numOfStuffingBytes; i++ )
+                                            {
+                                                packet[i+6] = 0xFF;
+                                            }                                                        
+                                        }
+                                        m_filterAudio= false;
+                                        m_transitioningToNetwork = false;
+                                        DEBUG("Audio inpoint detected, setting transitioning to network flag to false. stop filtering network audio");
+                                        if ( m_mapEnding )
+                                        {
+                                           TRACE3("Stop passing Ad audio");
+                                           m_mapEnding= false;
+                                           stopInsertion(); 
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if ( m_filterAudio )
+            {
+                    if (pid == 0x1FFF ) {                          
+                        if ( m_transitioningToNetwork )
+                        {                            
+                            int byteCount = getInsertionAudioDataDuringTransitionBackToNetwork(packet);
+                            if (byteCount == -1) {
+                                m_transitioningToNetwork = false;
+                                DEBUG("Audio inpoint detected, setting transitioning to network flag to false null packet, no more audio data bytes");
+                            }
+                            else
+                            {
+                                lastAdAudioPacket = packet;                                
+                            }
+                        }
+                    } 
+                else {   
+                    for( int i= 0; i < m_audioComponentCount; ++i )
+                    {
+                      if ( pid == m_audioComponents[i].pid )
+                      {   
+                        if ( m_transitioningToNetwork )
+                        { 
+                           int byteCount = getInsertionAudioDataDuringTransitionBackToNetwork(packet);
+                            if (byteCount == -1 || byteCount == -2) {                                
+                                packet[1]= ((packet[1] & 0xE0) | 0x1F);
+                                packet[2]= 0xFF; 
+                                if ( byteCount == -1 ) 
+                                { 
+                                    m_transitioningToNetwork = false;
+                                    DEBUG("Audio inpoint detected, setting transitioning to network flag to false, no more audio data bytes");
+                                }
+                            }
+                            else
+                            {
+                                lastAdAudioPacket = packet;
+                            }                            
+                        }
+                        else
+                        { 
+                            packet[1]= ((packet[1] & 0xE0) | 0x1F);
+                            packet[2]= 0xFF; 
+                        }
+                        break;
+                      }
+                   }
+                }              
+            }
+        }
+
+    if ( m_privateDataEnable && m_privateDataPids[pid] )
          {
             if ( m_events )
             {
                m_events->privateData( this, (unsigned char)m_privateDataTypes[pid], packet, 188 );
             }
          }
-      }
+    }
       
       if ( m_mapStartArmed && m_insertSrc )
       {
@@ -6132,8 +7326,18 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
          // hitting the audio splice-in PTS convert video to null packets
          if ( pid == m_videoPid )
          {
-            packet[1]= ((packet[1] & 0xE0) | 0x1F);
-            packet[2]= 0xFF;
+            if (m_transitioningToAd) {
+                int byteCount = getInsertionDataDuringTransitionToAd(packet);
+                if (byteCount == -1) {
+                    packet[1] = ((packet[1] & 0xE0) | 0x1F);
+                    packet[2] = 0xFF;
+                }                     
+            }
+            else
+            {
+              packet[1] = ((packet[1] & 0xE0) | 0x1F);
+              packet[2] = 0xFF;
+            }
          }
       }
 
@@ -6143,6 +7347,11 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
          {
             if ( !(m_mapStartArmed && !m_backToBackPrev) && !(m_mapEnding && !m_backToBack) )
             {
+               int packetPid = (((packet[1] << 8) | packet[2]) & 0x1FFF);
+               if( packetPid == m_audioPid )
+               {
+                packet[3] = 0xAA;
+               }
                // Executing a "replace" spot.  The insertion data is coming via
                // calls to getInsertionDataSize() and getInsertionData().
                // Convert all packets to null packets.
@@ -6156,11 +7365,23 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
 
             // Executing a "fixed" spot
 
-            long long start= (m_mapSpliceInPTS-500*90LL)&MAX_90K;
-            atEnd= !PTS_IN_RANGE( m_currentPTS, start, m_mapSpliceOutPTS );
-            if ( atEnd )
+            long long start= (m_mapSpliceOutPTS-500*90LL)&MAX_90K;
+            if(alternateVideoSplicePointPTS != -1 && alternateVideoSplicePointExitFramePTS != -1)
             {
-               stopInsertion();
+                if(m_currentPTS == alternateVideoSplicePointExitFramePTS)
+                {
+                    DEBUG("Stopping fixed spot tracking at exit frame PTS %llX Outpoint Frame PTS %llX ", alternateVideoSplicePointExitFramePTS, alternateVideoSplicePointPTS);
+                    m_mapSpliceUpdatedOutPTS = alternateVideoSplicePointPTS;
+                    stopInsertion();                    
+                }
+            }
+            else 
+            {
+                atEnd= !PTS_IN_RANGE( m_currentPTS, start, m_mapSpliceInPTS );
+                if ( atEnd )
+                {
+                   stopInsertion();
+                }
             }
          }
       }
@@ -6168,50 +7389,32 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
       packet += m_packetSize;
       ++packetCount;
    }
-
+   
    processedSize= ((packet-m_ttsSize)-packets);
-
-   if ( m_haveCompatiblePCROffsets && m_mapStartArmed )
-   {
-      unsigned char *ps= packets+m_ttsSize;
-      unsigned char *pd= ps;
-      int processedSizeNew;
-      while ( ps < packet )
-      {
-         pid= (((ps[1] << 8) | ps[2]) & 0x1FFF);
-         if ( pid != 0x1FFF )
-         {
-            if ( ps != pd )
-            {
-               memmove( pd-m_ttsSize, ps-m_ttsSize, m_packetSize );
-            }
-            pd += m_packetSize;
-         }
-
-         ps += m_packetSize;
-      }
-      packet= pd;
-      processedSizeNew= ((packet-m_ttsSize)-packets);
-      TRACE3("compacted processed size from %d to %d", processedSize, processedSizeNew);
-      processedSize= processedSizeNew;
-   }
+   processedSize -= trimSize;
 
    m_streamOffset += processedSize;
 
-   if ( m_mapping && wasMapping && !m_mapStartArmed && !m_mapEnding && !wasArmed && (m_insertSrc != 0) )
+   if ( m_mapping && (wasMapping || m_backToBackPrev) && !m_mapStartArmed && !(m_mapEnding && !m_backToBack) && !wasArmed && (m_insertSrc != 0) )
    {
       processedSize= 0;
    }
 
-   if ( m_ttsSize && m_mapping && !wasMapping && (m_insertSrc != 0) )
+   if ( m_ttsSize && m_mapping && !wasMapping && (m_insertSrc != 0) && !m_backToBackPrev)
    {
-      m_ttsInsert= ((packet[-m_packetSize-4]<<24)|(packet[-m_packetSize-3]<<16)|(packet[-m_packetSize-2]<<8)|packet[-m_packetSize-1]);
-      TRACE3("last packet before mapping: ttsInsert %08X", m_ttsInsert);
+        unsigned char *lastPacket = packets + processedSize - m_packetSize + m_ttsSize ;
+        m_ttsInsert = ((lastPacket[- 4] << 24) | (lastPacket[- 3] << 16) | (lastPacket[- 2] << 8) | lastPacket[- 1]);
+        m_segmentBasePCR = (trimmedCurrentPCR + ((m_ttsInsert - trimmedPCRTTSValue) / 300)) & MAX_90K;
+
+        m_firstAdPacketAfterTransitionTTSValue  = m_ttsInsert;
+        TRACE3("last packet before mapping: ttsInsert %08X", m_ttsInsert);
+        DEBUG("Last network packet before transition to all Ad packets new m_segmentBasePCR %llx first Ad packet TTS value %08X", m_segmentBasePCR, m_firstAdPacketAfterTransitionTTSValue);
+
    }
    else if ( m_ttsSize && m_mapping && processedSize )
    {
       m_ttsInsert= ((packet[-m_packetSize-4]<<24)|(packet[-m_packetSize-3]<<16)|(packet[-m_packetSize-2]<<8)|packet[-m_packetSize-1]);
-      TRACE3("updating ttsInsert %08X", m_ttsInsert);
+      TRACE3("updating ttsInsert %08X processed size %d ", m_ttsInsert, processedSize);
    }
 
    if ( m_captureEnabled )
@@ -6242,9 +7445,101 @@ int RBIStreamProcessor::processPacketsAligned( unsigned char* packets, int size,
          }
       }
    }
-
+    
    return processedSize;
 }
+
+long long RBIStreamProcessor::getAC3FramePTS( unsigned char* packet, AC3FrameInfo* ac3FrameInfo, long long currentAudioPTS)
+{
+    long long audioPTS = -1;
+    int payloadOffset = 4;
+    int adaptation = ((packet[3] & 0x30) >> 4);
+    int payloadStart = (packet[1] & 0x40);
+    ac3FrameInfo->syncByteDetectedInPacket = false;
+
+    if (adaptation & 0x02) {
+        payloadOffset += (1 + packet[4]);
+    }
+ 
+
+    if (adaptation & 0x01) {
+        if (payloadStart) {
+            if ((packet[payloadOffset] == 0x00) && (packet[payloadOffset + 1] == 0x00) && (packet[payloadOffset + 2] == 0x01)) {
+                int pesHeaderDataLen = packet[payloadOffset + 8];
+                ac3FrameInfo->pesPacketLength = ((packet[payloadOffset + 4] << 8) | packet[payloadOffset+5]);
+                ac3FrameInfo->pesHeaderDataLen = pesHeaderDataLen;
+                ac3FrameInfo->frameCnt=0;
+                ac3FrameInfo->pesPacketLengthMSB = &packet[payloadOffset + 4];
+                ac3FrameInfo->pesPacketLengthLSB = &packet[payloadOffset + 5];
+                if (packet[payloadOffset + 7] & 0x80) {
+                    audioPTS = readTimeStamp(&packet[payloadOffset + 9]);                                
+                }
+                payloadOffset += (9 + pesHeaderDataLen);
+
+                // Scan for AC-3 frame sync word 0x0B77
+                for( int i= payloadOffset; i < m_packetSize-5 ; ++i )
+                {
+                    if ( (packet[i] == 0x0B) && (packet[i+1] == 0x77))
+                    {
+                        ac3FrameInfo->byteCnt = 188 - i;
+                        ac3FrameInfo->syncByteDetectedInPacket = true;
+                    }
+                }
+            }
+        }
+        else
+        {
+            ac3FrameInfo->byteCnt += (188 - payloadOffset);                        
+            if(ac3FrameInfo->byteCnt >= ac3FrameInfo->size)
+            {                               
+                audioPTS = currentAudioPTS + ac3FrameInfo->duration;                
+                ac3FrameInfo->byteCnt -= ac3FrameInfo->size;
+                ac3FrameInfo->frameCnt++;
+                ac3FrameInfo->syncByteDetectedInPacket = true;
+            }
+        }
+    }
+    return audioPTS;
+}
+
+
+void RBIStreamProcessor::getAC3FrameSizeDuration(unsigned char* packet, int offset, AC3FrameInfo* frameInfo)
+{    
+    frameInfo->duration = -1;
+    frameInfo->size = -1;
+    frameInfo->byteCnt = 0;
+
+    for( int i= offset; i < m_packetSize-5; ++i )
+    {
+        // Detect AC-3 frame sync word
+        if ( (packet[i] == 0x0B) && (packet[i+1] == 0x77))
+        {
+            int fscod = (packet[i+4]>>6)&0x3;
+            int frmsizecod = (packet[i+4])&0x3F;
+            int bitrateIndex = frmsizecod>>1;
+            int nominalBitrateInkbps[] = {32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640}; 
+
+            switch ( fscod )
+            {
+                case 0x00: // 48kHz sampling rate
+                    frameInfo->duration = 0.032*90000;
+                    frameInfo->size = (32 * nominalBitrateInkbps[bitrateIndex])/8;
+                    break;
+                case 0x01: // 44.1kHz sampling rate
+                    frameInfo->duration = 0.03483*90000;
+                    frameInfo->size = (34.83 * nominalBitrateInkbps[bitrateIndex])/8;
+                    frameInfo->size = (frmsizecod & 0x1)? (frameInfo->size+1):frameInfo->size;
+                    break;
+                case 0x02: // 32kHz sampling rate
+                    frameInfo->duration = 0.048*90000;
+                    frameInfo->size = (48 * nominalBitrateInkbps[bitrateIndex])/8;
+                    break;
+                default:
+                    break;
+            }             
+        }
+    }
+ }
 
 void RBIStreamProcessor::processSCTE35Section( unsigned char* section, int sectionLength )
 {
@@ -6408,7 +7703,8 @@ void RBIStreamProcessor::processSCTE35Section( unsigned char* section, int secti
                   }
                }
                else
-               {
+               {                  
+                  DEBUG("Detected via Splice Insert SpliceTime %llX mapSpliceOutPTSIn %llX ", spliceTime, m_mapSpliceInPTS);
                   WARNING("SCTE-35: ignoring splice_insert with out_of_network_indicator of 0");
                   ignoreCommand= true;
                }
@@ -6426,6 +7722,7 @@ void RBIStreamProcessor::processSCTE35Section( unsigned char* section, int secti
                int descriptorLoopLength= (section[descriptorOffset]<<8);
 
                triggerEmitted= processSCTEDescriptors( section, spliceCmd, descriptorOffset, descriptorLoopLength, spliceTime );
+               TRACE4("triggerEmitted %d", triggerEmitted);
             }
             if ( !triggerEmitted && !ignoreCommand )
             {
@@ -6463,7 +7760,7 @@ void RBIStreamProcessor::processSCTE35Section( unsigned char* section, int secti
          }
             break;
       #else
-            DEBUG("SCTE-35: ignoring splice_insert cmd");
+            INFO("SCTE-35: ignoring splice_insert cmd");
             ignoreCommand= true;
             break;
       #endif
@@ -6550,7 +7847,6 @@ void RBIStreamProcessor::processSCTE35Section( unsigned char* section, int secti
                   int descriptorLoopLength= (section[descriptorOffset]<<8);
 
                   triggerEmitted= processSCTEDescriptors( section, spliceCmd, descriptorOffset, descriptorLoopLength, spliceTime );
-                  TRACE4("triggerEmitted %d", triggerEmitted);
                }
             }
             break;
@@ -6790,6 +8086,7 @@ bool RBIStreamProcessor::processStartCode( unsigned char *buffer, bool& keepScan
             {
                int slice_type_bits= (buffer[INDEX(4)] & 0x7F);
                int slice_type= expGolombTable7[slice_type_bits].value;
+               
                switch ( slice_type )
                {
                   case 0:  // P slice
@@ -6815,7 +8112,7 @@ bool RBIStreamProcessor::processStartCode( unsigned char *buffer, bool& keepScan
                   {
                      TRACE3("found IDR frame");
                   }
-                  m_scanForFrameType= false;
+                  //m_scanForFrameType= false;
                   keepScanning= false;
                }
             }
@@ -6911,6 +8208,8 @@ bool RBIStreamProcessor::processStartCode( unsigned char *buffer, bool& keepScan
          case 23:
          default:
             break;
+            
+            
       }
    }
    else
@@ -6938,7 +8237,7 @@ bool RBIStreamProcessor::processStartCode( unsigned char *buffer, bool& keepScan
                    break;
              }
              ++m_frameInGOPCount;
-             m_scanForFrameType= false;
+             //m_scanForFrameType= false;
              keepScanning= false;
              break;
           // Sequence Header
@@ -7344,14 +8643,15 @@ bool RBIStreamProcessor::processSCTEDescriptors( unsigned char *packet, int cmd,
                         }
                      }
 
-                     m_splice_returnToNetwork_offset = 0;
-
-                     if (  (cmd == 0x06)  && RBIManager::getInstance()->isProgrammerEnablementEnabled() && (segmentationTypeId == 0x34 || segmentationTypeId == 0x35) )
-                     {
-                        // One frame time in 90KHz clock
-                        // (1/59.94 * 90,000)
-                        m_splice_returnToNetwork_offset = 1502;
-                     }
+                    if ( ( (segmentationTypeId == 0x35 && RBIManager::getInstance()->isProgrammerEnablementEnabled()) /* || segmentationTypeId == 0x37 */ ) && m_insertSrc )
+                    {                        
+                        if( abs(spliceTime - m_mapSpliceInPTS) < 12000)
+                        {
+                            m_mapSpliceInPTS = spliceTime;
+                            m_netReplaceableVideoFramesCnt = round((double)( (spliceTime - m_mapStartPTS)*VIDEO_FRAME_RATE/90000) );
+                            DEBUG("New number of network video frames to replace %d New In point PTS %llX segmentationTypeId %d ", m_netReplaceableVideoFramesCnt, m_mapSpliceInPTS, segmentationTypeId);
+                        }                        
+                    }
                   }
                   else
                   {
@@ -7542,34 +8842,28 @@ void RBIStreamProcessor::termComponent( RBIStreamComponent *component )
 
 void RBIStreamProcessor::reTimestamp( unsigned char *packet, int length )
 {
-   long long PCR= 0;
    long long timeOffset, rateAdjustedPCR;
+   double adNetPCRDelta = 0;
                   
    if ( !m_haveBaseTime )
    {
-      long long offsetPCRLinear, offsetPCRInsert;
-      m_haveBaseTime= true;
-      m_baseTime= m_insertSrc->startPTS();
-      m_basePCR= m_insertSrc->startPCR();
-      m_segmentBaseTime= (m_mapStartPTS != -1LL) ? m_mapStartPTS : m_currentPTS;
-      m_segmentBasePCR= (m_mapStartPCR != -1LL) ? m_mapStartPCR : m_currentPCR;
-      offsetPCRLinear= ((m_segmentBaseTime - m_segmentBasePCR) & MAX_90K);
-      offsetPCRInsert= ((m_baseTime - m_basePCR) & MAX_90K);
-      INFO("RBIStreamProcessor::reTimestamp: m_baseTime %llx m_basePCR %llx m_segmentBaseTime %llx m_segmentBasePCR %llx offsetPCRLinear %llx offsetPCRInsert %llx",
-      	m_baseTime, m_basePCR, m_segmentBaseTime, m_segmentBasePCR, offsetPCRLinear, offsetPCRInsert);
-      if ( !m_backToBackPrev )
-      {
-         if ( offsetPCRLinear > offsetPCRInsert )
-         {
-            m_segmentBasePCR= ((m_segmentBaseTime - ((offsetPCRLinear+offsetPCRInsert)/2)) & MAX_90K);
-            DEBUG("RBIStreamProcessor::reTimestamp: update m_segmentBasePCR %llx", m_segmentBasePCR );
-         }
-         else if ( offsetPCRInsert > offsetPCRLinear )
-         {
-            m_segmentBaseTime= ((m_segmentBasePCR + offsetPCRInsert) & MAX_90K);
-            DEBUG("RBIStreamProcessor::reTimestamp: update m_segmentBaseTime %llx", m_segmentBaseTime );
-         }
-      }
+        m_haveBaseTime = true;
+        if( m_b2bSavedAudioPacketsCnt > 0 )
+        {
+            m_prevAdBaseTime = m_baseTime;
+            m_prevAdSegmentBaseTime = m_segmentBaseTime;
+            DEBUG("In reTimestamp setting prev ad base time m_prevAdBaseTime %llx m_prevAdSegmentBaseTime %llx", m_prevAdBaseTime, m_prevAdSegmentBaseTime);
+        }
+        m_baseTime = m_insertSrc->startPTS();
+        m_segmentBaseTime = m_currentMappedPTS + (long long)(90000/VIDEO_FRAME_RATE);   
+        
+        m_basePCR = m_insertSrc->startPCR();
+        if ( (m_ttsInsert - m_lastMappedPCRTTSValue)/(300 * 90000) < 1 )
+        {
+            m_segmentBasePCR = m_currentMappedPCR + (m_ttsInsert - m_lastMappedPCRTTSValue)/300;
+        }
+        m_currentMappedPCR = m_segmentBasePCR;
+        DEBUG("In reTimestamp m_baseTime %llx m_basePCR %llx m_segmentBaseTime %llx m_segmentBasePCR %llx m_currentPCR %llx ", m_baseTime, m_basePCR, m_segmentBaseTime, m_segmentBasePCR, m_currentPCR);        
    }
       
    TRACE1("RBIStreamProcessor::reTimestamp: packet %p length %d", packet, length );
@@ -7581,6 +8875,7 @@ void RBIStreamProcessor::reTimestamp( unsigned char *packet, int length )
       int pid;
 
       pid= (((packet[1] << 8) | packet[2]) & 0x1FFF);
+
       
       {
          // Update PCR values
@@ -7590,11 +8885,30 @@ void RBIStreamProcessor::reTimestamp( unsigned char *packet, int length )
             int adaptationFlags= packet[5];
             if ( (adaptationLen > 0) && (adaptationFlags & 0x10) )
             {
-               PCR= readPCR( &packet[6] );
-               m_currentInsertPCR= PCR;
-               timeOffset= PCR-m_basePCR;
+               m_lastAdPCR= readPCR( &packet[6] );
+               m_currentInsertPCR= m_lastAdPCR;
+               
+               if (!m_haveSegmentBasePCRAfterTransitionToAd) {
+                    m_haveSegmentBasePCRAfterTransitionToAd = true;
+                    rateAdjustedPCR = (m_segmentBasePCR + ((m_ttsInsert - m_firstAdPacketAfterTransitionTTSValue) / 300)) & MAX_90K;
+                    m_segmentBasePCR = rateAdjustedPCR;
+                    m_basePCR = m_lastAdPCR;
+                    DEBUG("RBIStreamProcessor::reTimestamp: setting segment base PCR %llx m_ttsInsert %08x Ad base PCR: %llx ", m_segmentBasePCR, m_ttsInsert, m_basePCR );
+                } else {
+                        if( m_adVideoPktsDelayed || m_adAudioPktsDelayed || m_adVideoPktsTooFast || m_adVideoPktsDelayedPCRBased)
+                        {
+                            timeOffset = (m_ttsInsert - m_lastMappedPCRTTSValue)/300;
+                            rateAdjustedPCR = (((long long) (timeOffset + 0.5) + m_currentMappedPCR)&0x1FFFFFFFFLL);
+                            m_segmentBasePCR = rateAdjustedPCR;
+                            m_basePCR = m_lastAdPCR;                            
+                        }
+                        else
+                        {
+                            timeOffset= m_lastAdPCR-m_basePCR;
+                            rateAdjustedPCR= (((long long)(timeOffset+0.5)+m_segmentBasePCR)&0x1FFFFFFFFLL);
+                        }
+                }
 
-               rateAdjustedPCR= (((long long)(timeOffset/m_rate+0.5)+m_segmentBasePCR)&0x1FFFFFFFFLL);                  
                if ( rateAdjustedPCR < m_mapStartPCR )
                {
                   m_mapStartPCR= (m_mapStartPCR+10)&0x1FFFFFFFFLL;
@@ -7602,11 +8916,60 @@ void RBIStreamProcessor::reTimestamp( unsigned char *packet, int length )
                   rateAdjustedPCR= m_mapStartPCR;
                }
                m_currentMappedPCR= rateAdjustedPCR;
-               writePCR( &packet[6], rateAdjustedPCR );                  
+               writePCR( &packet[6], rateAdjustedPCR ); 
+               packet[0] = 0x48;
+               
+                if ( m_currentPCR != m_prevCurrentPCR )
+                {
+                    adNetPCRDelta = (m_currentMappedPCR - m_currentPCR)/90000.0;
+                    m_prevCurrentPCR = m_currentPCR;
+                    
+                    if ( m_adVideoFrameCount < (m_netReplaceableVideoFramesCnt - 120) )
+                    {
+                        if( !m_adVideoPktsDelayedPCRBased && !m_adVideoPktsTooFast && adNetPCRDelta > 0.2 )
+                        {
+                            DEBUG("Ad Video Packets delayed speedup, PCR based adNetPCRDelta %f ", adNetPCRDelta );
+                            m_adVideoPktsDelayedPCRBased = true;
+                        }
+                        else if( m_adVideoPktsDelayedPCRBased && adNetPCRDelta < 0 )
+                        {
+                            DEBUG("Ad Video Packets back to normal, PCR based adNetPCRDelta %f ", adNetPCRDelta );
+                            m_adVideoPktsDelayedPCRBased = false;
+                        }
+
+                        if( !m_adVideoPktsTooFast && adNetPCRDelta < -0.2 )
+                        {
+                            DEBUG("Ad Video Packets too fast PCR based adNetPCRDelta %f ", adNetPCRDelta );
+                            m_adVideoPktsDelayedPCRBased = false;
+                            m_adVideoPktsTooFast = true;
+                        }
+                        else if( m_adVideoPktsTooFast && adNetPCRDelta > 0 )
+                        {
+                            DEBUG("Ad Video Packets back to normal, PCR based adNetPCRDelta %f ", adNetPCRDelta );
+                            m_adVideoPktsTooFast = false;
+                        } 
+                    }
+                }              
             }
             payload += (1+packet[4]);
          }      
 
+    if (m_b2bSavedAudioPacketsCnt > 0 && pid == m_audioPid )
+    {
+        long long PTS= 0;
+        
+        if ( payloadStart )
+         {
+            if ( (packet[payload] == 0x00) && (packet[payload+1] == 0x00) && (packet[payload+2] == 0x01) )
+            {
+                int tsbase= payload+9;
+                if ( packet[payload+7] & 0x80 )
+                {     
+                  PTS= readTimeStamp( &packet[tsbase] );
+                }
+            }
+         }
+    }
          // Update PTS/DTS values
          if ( payloadStart )
          {
@@ -7615,29 +8978,91 @@ void RBIStreamProcessor::reTimestamp( unsigned char *packet, int length )
                int pesHeaderDataLen= packet[payload+8];
                int tsbase= payload+9;
                long long timeOffset;
-               long long PTS= 0, DTS;
-               long long rateAdjustedPTS= 0, rateAdjustedDTS;
+               long long PTS= 0, DTS=0;
+               long long rateAdjustedPTS= 0, rateAdjustedDTS=0;
 
                if ( packet[payload+7] & 0x80 )
                {     
-                  PTS= readTimeStamp( &packet[tsbase] );                 
+                  PTS= readTimeStamp( &packet[tsbase] );
+
                   timeOffset= PTS-m_baseTime;
-                  rateAdjustedPTS= (((long long)(timeOffset/m_rate+0.5)+m_segmentBaseTime)&0x1FFFFFFFFLL);
+                  rateAdjustedPTS= (((long long)(timeOffset+0.5)+m_segmentBaseTime)&0x1FFFFFFFFLL);
+                  
+                  if( pid == m_audioPid && m_b2bSavedAudioPacketsCnt > 0  )
+                  {
+                    timeOffset= PTS-m_prevAdBaseTime;
+                    rateAdjustedPTS= (((long long)(timeOffset+0.5)+m_prevAdSegmentBaseTime)&0x1FFFFFFFFLL);
+                  }
+
                   writeTimeStamp( &packet[tsbase], packet[tsbase]>>4, rateAdjustedPTS );
                   if ( pid == m_pcrPid )
                   {
                      m_currentMappedPTS= rateAdjustedPTS;
                   }
                   tsbase += 5;
+                  if( pid == m_videoPid )
+                  {
+                    m_lastAdVideoFramePTS = PTS;
+                  }
+                  if (pid == m_videoPid)
+                  {
+                    long long elapsed= getCurrentTimeMicro()-m_insertStartTime;
+                    int inFrameCnt = (elapsed*VIDEO_FRAME_RATE)/1000000;
+                    
+                    int timeDeltaFrames = ((elapsed*VIDEO_FRAME_RATE)/1000000) - m_adVideoFrameCount;
+
+                    if (m_adVideoFrameCount >= (m_netReplaceableVideoFramesCnt - 120))
+                    {
+                        if( !m_adVideoPktsDelayed && timeDeltaFrames > 8 )
+                        {
+                            DEBUG("Ad Video Packets delayed timeDeltaFrames %d ", timeDeltaFrames );
+                            m_adVideoPktsDelayed = true;
+                        }
+                        else if( m_adVideoPktsDelayed && timeDeltaFrames < -4 ) 
+
+                        {
+                            DEBUG("Ad Video Packets back to normal, timeDeltaFrames %d ", timeDeltaFrames );
+                            m_adVideoPktsDelayed = false;
+                        }
+                        m_adVideoPktsTooFast = false;
+                        m_adVideoPktsDelayedPCRBased = false;
+                    }
+                  }
                }
                if ( packet[payload+7] & 0x40 )
                {
                   DTS= readTimeStamp( &packet[tsbase] );                 
                   timeOffset= DTS-m_baseTime;
-                  rateAdjustedDTS= (((long long)(timeOffset/m_rate+0.5)+m_segmentBaseTime)&0x1FFFFFFFFLL);
+                  rateAdjustedDTS= (((long long)(timeOffset+0.5)+m_segmentBaseTime)&0x1FFFFFFFFLL);
+                  if( pid == m_audioPid && m_b2bSavedAudioPacketsCnt > 0  )
+                  {
+                    timeOffset= DTS-m_prevAdBaseTime;
+                    rateAdjustedDTS= (((long long)(timeOffset+0.5)+m_prevAdSegmentBaseTime)&0x1FFFFFFFFLL);
+                  }
                   writeTimeStamp( &packet[tsbase], packet[tsbase]>>4, rateAdjustedDTS );
                   tsbase += 5;
                }
+
+                if (rateAdjustedDTS == 0) {
+                    rateAdjustedDTS = rateAdjustedPTS;
+                    DTS = PTS;
+                }               
+
+                if( m_currentMappedPCR != -1 && pid == m_audioPid && rateAdjustedDTS != 0 )
+                { 
+                    if( !m_adAudioPktsDelayed && ( m_currentMappedPCR > rateAdjustedDTS || ((m_adVideoFrameCount >= (m_netReplaceableVideoFramesCnt - 120)) && (rateAdjustedDTS - m_currentMappedPCR)/90000.0 < 0.5) ) )
+                    {
+                        m_adAudioPktsDelayed = true;
+                        m_adVideoPktsTooFast = false;
+                        DEBUG("Ad Audio Packets delayed, decoding delay %f m_currentMappedPCR %llx rateAdjustedDTS %llx ", (rateAdjustedDTS - m_currentMappedPCR) / 90000.0, m_currentMappedPCR, rateAdjustedDTS );
+                    }
+                    else if( m_adAudioPktsDelayed && ( ((m_adVideoFrameCount < (m_netReplaceableVideoFramesCnt - 120)) && m_currentMappedPCR <= rateAdjustedDTS) || ((m_adVideoFrameCount >= (m_netReplaceableVideoFramesCnt - 120)) && (rateAdjustedDTS - m_currentMappedPCR)/90000.0 > 0.6 ) ) ) 
+                    {
+                        m_adAudioPktsDelayed = false;
+                        DEBUG("Ad Audio Packets back to normal, decoding delay %f m_currentMappedPCR %llx rateAdjustedDTS %llx ", (rateAdjustedDTS - m_currentMappedPCR) / 90000.0, m_currentMappedPCR, rateAdjustedDTS );
+                    }
+                } 
+
                if ( packet[payload+7] & 0x02 )
                {
                   // CRC flag is set.  Following the PES header will be the CRC for the previous PES packet

@@ -97,6 +97,9 @@ class RBIInsertSource
       virtual int read( unsigned char *buffer, int length )=0;
       virtual unsigned int getTotalRetryCount()=0;
       virtual RBIStreamProcessor& getStreamProcessor()= 0;
+      
+      virtual std::vector<int> getAdVideoExitFrameInfo()= 0;
+      virtual int getNextAdPacketPid()=0;
 
       int getId()
       {
@@ -294,10 +297,10 @@ class RBITrigger
      int m_eventContext;
      int m_eventId;
      int m_eventIdInstance;
-     int m_unifiedId;
      long long m_splicePTS;
      long long m_utcTimeTrigger;
      long long m_utcTimeSplice;
+     int m_unifiedId;
      const PlacementOpportunityData* m_poData;
 
      friend class RBIStreamProcessor;
@@ -497,6 +500,12 @@ class RBIStreamProcessor
       int getInsertionDataSize();
       
       int getInsertionData( unsigned char* packets, int size );
+
+      bool isNextPacketAudio();
+      int getInsertionDataDuringTransitionToAd(unsigned char*);
+      void reTimestampDuringTransitionToAd(unsigned char*, int);
+      int getInsertionAudioDataDuringTransitionBackToNetwork(unsigned char*);
+      void reTimestampDuringTransitionBack(unsigned char*, int, long long int, unsigned int);
    
       int processPackets( unsigned char* packets, int size, int *isTSFormatError );
       float getRetimestampRate()
@@ -524,6 +533,11 @@ class RBIStreamProcessor
          m_insertEndTime = insertEndTime;
       }
 
+      long long getSpliceUpdatedOutPTS(void)
+      {
+        return m_mapSpliceUpdatedOutPTS;
+      }
+
    private:
       bool setComponentInfo( int pcrPid,
                              int videoCount, int *videoPids, int *videoTypes,
@@ -547,6 +561,22 @@ class RBIStreamProcessor
       unsigned int getBits( unsigned char *& p, int& mask, int bitCount );
       unsigned int getUExpGolomb( unsigned char *& p, int& mask );
       int getSExpGolomb( unsigned char *& p, int& mask );
+
+        typedef struct _AC3FrameInfo
+        {
+           int duration;
+           int size;
+           int byteCnt;
+           bool syncByteDetectedInPacket;
+           int pesPacketLength;
+           unsigned char *pesPacketLengthMSB;
+           unsigned char *pesPacketLengthLSB;
+           int pesHeaderDataLen;
+           int frameCnt;
+        } AC3FrameInfo;
+
+      long long getAC3FramePTS( unsigned char* packet, AC3FrameInfo *ac3FrameInfo, long long m_currentAudioPTS);
+      void getAC3FrameSizeDuration(unsigned char* packet, int offset, AC3FrameInfo *ac3FrameInfo);
 
       bool m_havePAT;
       int m_versionPAT;
@@ -572,7 +602,6 @@ class RBIStreamProcessor
 
       bool m_isH264;
       bool m_inSync;
-      bool m_haveCompatiblePCROffsets;
       int m_packetSize;
       int m_ttsSize;
       int m_remainderOffset;
@@ -592,7 +621,10 @@ class RBIStreamProcessor
       int m_frameType;
       bool m_scanForFrameType;
       bool m_scanHaveRemainder;
+      bool m_prescanForFrameType;
+      bool m_prescanHaveRemainder;
       unsigned char m_scanRemainder[RBI_SCAN_REMAINDER_SIZE*3];
+      unsigned char m_prescanRemainder[RBI_SCAN_REMAINDER_SIZE*3];
 
       int m_emulationPreventionCapacity;
       int m_emulationPreventionOffset;
@@ -616,6 +648,7 @@ class RBIStreamProcessor
       long long m_segmentBaseTime;
       long long m_segmentBasePCR;
       long long m_currentPCR;
+      long long m_prevCurrentPCR;
       long long m_currentPTS;
       long long m_leadTime;
       long long m_currentAudioPTS;
@@ -653,11 +686,11 @@ class RBIStreamProcessor
       bool m_startOfSequencePrev;
       bool m_mapEditGOP;
       int m_spliceOffset;
-      long long m_mapSpliceInPTS;
       long long m_mapSpliceOutPTS;
-      long long m_mapSpliceInAbortPTS;
+      long long m_mapSpliceInPTS;
       long long m_mapSpliceOutAbortPTS;
-      long long m_mapSpliceOutAbort2PTS;
+      long long m_mapSpliceInAbortPTS;
+      long long m_mapSpliceInAbort2PTS;
       long long m_mapStartPTS;
       long long m_mapStartPCR;
       long long m_insertStartTime;
@@ -688,7 +721,6 @@ class RBIStreamProcessor
       bool m_H264Enabled;
       bool m_captureEnabled;
       bool m_audioReplicationEnabled;
-      bool m_PCRoffsetThresholdEnabled;
       int m_captureEndCount;
       FILE *m_outFile;
       int m_audioInsertCount;
@@ -700,7 +732,50 @@ class RBIStreamProcessor
       unsigned char m_replicateAudioPacket[MAX_PACKET_SIZE];
       unsigned int m_replicateAudioIndex;
       char *m_TimeSignalbase64Msg;
-      unsigned int m_splice_returnToNetwork_offset;
+      
+      unsigned int m_adVideoFrameCount;
+      unsigned int m_adReadVideoFrameCnt; 
+      bool m_transitioningToAd;
+      bool m_transitioningToNetwork;
+      unsigned int m_splicePTS_offset;
+      unsigned int m_netReplaceableVideoFramesCnt;
+      long long  m_lastAdVideoFramePTS;
+      bool m_maxAdVideoFrameCountReached;
+      bool m_maxAdAudioFrameCountReached;
+      bool m_lastAdVideoFrameDetected;
+
+      bool m_haveSegmentBasePCRAfterTransitionToAd;
+      long long m_lastAdPCR;
+      long long m_firstAdPacketAfterTransitionTTSValue;
+      unsigned int m_lastPCRTTSValue;
+      unsigned int m_lastMappedPCRTTSValue;
+      bool PCRBaseTime;
+      bool m_adAudioPktsDelayed;
+      bool m_adVideoPktsDelayed;
+      bool m_adVideoPktsDelayedPCRBased;
+      bool m_adVideoPktsTooFast;
+      bool m_adPktsAccelerationEnable;
+      bool m_skipNullPktsInAd;
+      unsigned int m_ac3FrameByteCnt;
+      bool m_adAccelerationState;
+      bool m_removeNull_PSIPackets;
+      bool m_determineNetAC3FrameSizeDuration;
+      bool m_determineAdAC3FrameSizeDuration;
+      int m_spliceAudioPTS_offset;
+      long long m_currentAdAudioPTS;
+      int m_adFramePacketCount;
+      bool m_delayAdAudioPacketDuringTransition;
+      long long m_mapSpliceUpdatedOutPTS;
+      unsigned char *m_b2bPrevAdAudioData;
+      unsigned char *m_b2bPrevAdAudioDataCopy;
+      unsigned int m_b2bSavedAudioPacketsCnt;
+      unsigned int m_b2bBackedAdAudioPacketsCnt;
+      long long m_prevAdBaseTime;
+      long long m_prevAdSegmentBaseTime;
+
+
+        AC3FrameInfo netAC3FrameInfo;
+        AC3FrameInfo adAC3FrameInfo;
 };
 
 class RBIContext : public RBIStreamProcessorEvents, public RBIInsertSourceEvents
@@ -771,7 +846,7 @@ class RBIContext : public RBIStreamProcessorEvents, public RBIInsertSourceEvents
       void acquire();
       int release();
 
-      void updateInsertionState();
+      void updateInsertionState(long long startPTS);
       bool triggerDetected( RBIStreamProcessor *sp, RBITrigger* trigger );
       bool getTriggerDetectedForOpportunity(void);
       void setTriggerDetectedForOpportunity(bool bTriggerDetectedForOpportunity);
@@ -884,10 +959,6 @@ class RBIManager
       {
          return m_audioReplicationEnabled;
       }
-      bool getPCROffsetThresholdEnabled()
-      {
-         return m_PCRoffsetThresholdEnabled;
-      }
 
       bool isProgrammerEnablementEnabled()
       {
@@ -931,7 +1002,6 @@ class RBIManager
       bool m_H264Enabled;
       bool m_captureEnabled;
       bool m_audioReplicationEnabled;
-      bool m_PCRoffsetThresholdEnabled;
       int m_spliceOffset;
       int m_spliceTimeout;
       int m_marginOfError;
