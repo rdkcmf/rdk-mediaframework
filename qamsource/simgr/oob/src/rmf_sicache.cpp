@@ -268,11 +268,11 @@ void rmf_InbSiCache::ReleaseWriteLock(void)
 }
 
 /*  Internal method to retrieve transport stream from the list given a frequency */
-uint32_t rmf_InbSiCache::get_transport_stream_handle(uint32_t freq,
+uintptr_t rmf_InbSiCache::get_transport_stream_handle(uint32_t freq,
         uint8_t mode)
 {
     rmf_SiTransportStreamEntry *walker = NULL;
-    uint32_t retVal = RMF_INBSI_INVALID_HANDLE;
+    uintptr_t retVal = RMF_INBSI_INVALID_HANDLE;
 
     RDK_LOG(RDK_LOG_TRACE1, "LOG.RDK.SI",
             "<%s> freq:%d, mode: %d\n", __FUNCTION__, freq, mode);
@@ -286,7 +286,7 @@ uint32_t rmf_InbSiCache::get_transport_stream_handle(uint32_t freq,
         {
             if (walker->modulation_mode == mode)
             {
-                retVal = (uint32_t) walker;
+                retVal = (uintptr_t) walker;
                 RDK_LOG(RDK_LOG_TRACE1, "LOG.RDK.SI", "<%s: %d> ..., Found transport stream handle for freq: %d, mode: %d, walker: 0x%x\n", __FUNCTION__, __LINE__, freq, mode, walker);
                 break;
             }
@@ -362,7 +362,7 @@ rmf_SiTransportStreamHandle rmf_InbSiCache::create_transport_stream_handle(
 {
     rmf_SiTransportStreamEntry *ts_entry = NULL;
     rmf_SiTransportStreamEntry *ts_walker = NULL;
-    uint32_t retVal = RMF_INBSI_INVALID_HANDLE;
+    uintptr_t retVal = RMF_INBSI_INVALID_HANDLE;
 
     RDK_LOG(RDK_LOG_TRACE1, "LOG.RDK.SI",
             "<%s> freq: %d mode:%d\n", __FUNCTION__, freq,
@@ -394,7 +394,7 @@ rmf_SiTransportStreamHandle rmf_InbSiCache::create_transport_stream_handle(
         {
             RDK_LOG(RDK_LOG_TRACE7, "LOG.RDK.SI", "ts freed @ %p\n", ts_entry);
             rmf_osal_memFreeP(RMF_OSAL_MEM_SI_CACHE_INB, ts_entry);
-            return (uint32_t) NULL;
+            return (uintptr_t) NULL;
         }
         ts_entry->modulation_mode = mode;
 
@@ -422,7 +422,7 @@ rmf_SiTransportStreamHandle rmf_InbSiCache::create_transport_stream_handle(
             }
         }
 
-        retVal = (uint32_t) ts_entry;
+        retVal = (uintptr_t) ts_entry;
     }
     else
     { // Dynamic entry created by tuning.
@@ -1609,7 +1609,7 @@ void rmf_InbSiCache::SetPATVersionForTransportStream(
     // Save exisiting pat program list as a reference
     if (ts_entry->pat_program_list != NULL)
     {
-        ts_entry->pat_reference = (uint32_t) ts_entry->pat_program_list;
+        ts_entry->pat_reference = (uintptr_t) ts_entry->pat_program_list;
     }
 
     // Un-couple pat programs from the transport stream
@@ -2234,10 +2234,10 @@ rmf_Error rmf_InbSiCache::SetPMTVersion(rmf_SiProgramHandle program_handle,
         pi->saved_pmt_ref->pcr_pid = pi->pcr_pid;
         pi->saved_pmt_ref->number_outer_desc = pi->number_outer_desc;
         pi->saved_pmt_ref->outer_descriptors_ref
-                = (uint32_t) pi->outer_descriptors;
+                = (uintptr_t) pi->outer_descriptors;
         pi->saved_pmt_ref->number_elem_streams = pi->number_elem_streams;
         pi->saved_pmt_ref->elementary_streams_ref
-                = (uint32_t) pi->elementary_streams;
+                = (uintptr_t) pi->elementary_streams;
     }
 
     // Un-couple exisiting outer descriptors and

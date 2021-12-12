@@ -155,7 +155,7 @@ typedef struct rmf_SiTransportStreamEntry
     uint32_t cvct_version; // CVCT
     uint32_t cvct_crc; // CVCT
     rmf_osal_Bool check_crc;
-    uint32_t pat_reference;
+    uintptr_t pat_reference;
     rmf_SiPatProgramList* pat_program_list; // PAT
     uint8_t* pat_byte_array;
     //ListSI programs;
@@ -205,9 +205,9 @@ typedef struct rmf_SiPMTReference
 {
     uint32_t pcr_pid;
     uint32_t number_outer_desc;
-    uint32_t outer_descriptors_ref;
+    uintptr_t outer_descriptors_ref;
     uint32_t number_elem_streams;
-    uint32_t elementary_streams_ref;
+    uintptr_t elementary_streams_ref;
 } rmf_SiPMTReference;
 
 
@@ -263,7 +263,7 @@ private:
 	rmf_SiTransportStreamHandle create_transport_stream_handle(
                 uint32_t frequency, uint8_t mode);
 
-	uint32_t get_transport_stream_handle(uint32_t freq,
+	uintptr_t get_transport_stream_handle(uint32_t freq,
 		uint8_t mode);
 
 	rmf_osal_Bool find_program_in_ts_pat_programs(rmf_SiPatProgramList *pat_list,

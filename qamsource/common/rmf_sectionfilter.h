@@ -382,7 +382,7 @@ private:
 	uint32_t getLowestPriorityFilter(uint32_t filterPriority);
 	void getTimeInMilliSecond(unsigned long long *pMillisSinceEpoch);
 	rmf_Error dispatchEvent(rmf_osal_eventqueue_handle_t queueHandle, uint32_t filterEvent, uint8_t priority, uint32_t filterID);
-	rmf_Error ReleaseFilterRequest(uint32_t uiFilterReqHandle);
+	rmf_Error ReleaseFilterRequest(uintptr_t uiFilterReqHandle);
 	rmf_Error ReleaseFromDeferredDeleteQueue();
 	bool IsDeferredDeleteQueueEmpty();
 };

@@ -5688,9 +5688,9 @@ rmf_osal_Bool rmf_OobSiCache::is_service_entry_available(list<rmf_SiServiceHandl
 /*  Retrieve DSG transport stream handle. This method creates a new handle
  if one is not already created.
  */
-uint32_t rmf_OobSiCache::get_dsg_transport_stream_handle(void)
+uintptr_t rmf_OobSiCache::get_dsg_transport_stream_handle(void)
 {
-    uint32_t retVal = 0;
+    uintptr_t retVal = 0;
     if (g_si_dsg_ts_entry == NULL)
     {
         /* Create a new rmf_SiTransportStreamEntry node */
@@ -5715,7 +5715,7 @@ uint32_t rmf_OobSiCache::get_dsg_transport_stream_handle(void)
     RDK_LOG(RDK_LOG_TRACE1, "LOG.RDK.SI",
             "<%s> g_si_dsg_ts_entry:0x%p\n",
             __FUNCTION__, g_si_dsg_ts_entry);
-    return (uint32_t) g_si_dsg_ts_entry;
+    return (uintptr_t) g_si_dsg_ts_entry;
 
 }
 
@@ -9088,11 +9088,11 @@ rmf_Error rmf_OobSiCache::load_si_entries_114(const char *siOOBCacheLocation, co
                         /* Read description names first */
                         int list_idx = 0;
                         rmf_SiLangSpecificStringList **name_list[3] = {&input_si_entry->source_names,  &input_si_entry->source_long_names, &input_si_entry->descriptions};
-                        int name_counts[3] = {(int)(input_si_entry->source_names), (int)(input_si_entry->source_long_names), (int)(input_si_entry->descriptions)};
+                        intptr_t name_counts[3] = {(intptr_t)(input_si_entry->source_names), (intptr_t)(input_si_entry->source_long_names), (intptr_t)(input_si_entry->descriptions)};
                         for (list_idx = 0; list_idx < 3; list_idx++)
                         {
                             int i = 0;
-                            unsigned int tmp_NameCount = 0;
+                            uintptr_t tmp_NameCount = 0;
 				
                             *name_list[list_idx] = NULL;
                             rmf_SiLangSpecificStringList *name_walker = NULL;
@@ -9197,7 +9197,7 @@ rmf_Error rmf_OobSiCache::load_si_entries_114(const char *siOOBCacheLocation, co
                             }
                             else
                             {
-                                input_si_entry_121->program_number = (uint32_t)(input_si_entry->program);
+                                input_si_entry_121->program_number = (uintptr_t)(input_si_entry->program);
                                 generate_new_si_entry(input_si_entry_121, &new_si_entry);
                             }
                         }
@@ -9370,18 +9370,18 @@ rmf_Error rmf_OobSiCache::load_si_entries_Post114(const char *siOOBCacheLocation
                         read_count += count;
                         /* Read description names first */
                         rmf_SiLangSpecificStringList **name_list = &input_si_entry->descriptions;
-                        int name_count = 0;
-                        if(0 > (int)(input_si_entry->descriptions))
+                        intptr_t name_count = 0;
+                        if(0 > (intptr_t)(input_si_entry->descriptions))
                         {
                             name_count = 0;
                         }
-                        else if( NAME_COUNT_MAX < (int)(input_si_entry->descriptions) )
+                        else if( NAME_COUNT_MAX < (intptr_t)(input_si_entry->descriptions) )
                         {
                             name_count = NAME_COUNT_MAX;
                         }
                         else
                         {
-                            name_count = (int)(input_si_entry->descriptions);
+                            name_count = (intptr_t)(input_si_entry->descriptions);
                         }
                         {
                             int i = 0;
@@ -9509,11 +9509,11 @@ rmf_Error rmf_OobSiCache::load_sns_entries(const char *siOOBSNSCacheLocation)
                         /* Read names */
                         int list_idx = 0;
                         rmf_SiLangSpecificStringList **name_list[2] = {&input_sn_entry->source_names,  &input_sn_entry->source_long_names};
-                        int name_counts[2] = {(int)(input_sn_entry->source_names), (int)(input_sn_entry->source_long_names)};
+                        intptr_t name_counts[2] = {(intptr_t)(input_sn_entry->source_names), (intptr_t)(input_sn_entry->source_long_names)};
                         for (list_idx = 0; list_idx < 2; list_idx++)
                         {
                             int i = 0;
-                            unsigned int tmp_NameCount =0;
+                            uintptr_t tmp_NameCount =0;
                             *name_list[list_idx] = NULL;
                             rmf_SiLangSpecificStringList *name_walker = NULL;
 

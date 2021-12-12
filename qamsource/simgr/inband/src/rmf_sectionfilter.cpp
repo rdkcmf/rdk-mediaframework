@@ -546,7 +546,7 @@ rmf_FilterSectionHandle * pSectionHandle)
  * @retval RMF_SUCCESS Indicates the call was successful and the filter is released.
  * @retval RMF_OSAL_EINVAL Indicates parameter is invalid
  */
-rmf_Error rmf_SectionFilter::ReleaseFilterRequest(uint32_t uiFilterReqHandle) 
+rmf_Error rmf_SectionFilter::ReleaseFilterRequest(uintptr_t uiFilterReqHandle)
 {
 	rmf_Error eRet = RMF_OSAL_EINVAL;
     rmf_Section_Data *pSectionData = NULL;
@@ -637,7 +637,7 @@ rmf_Error rmf_SectionFilter::ReleaseFromDeferredDeleteQueue()
 				//Request processing is finised. Remove fom the queue and delete the request
 				//Mutex locking is not done since insert and remove from same thread
                 m_sectionRequestsToRemove->Remove((rmf_SymbolMapKey)key);
-				ReleaseFilterRequest((uint32_t) pRequest);
+				ReleaseFilterRequest((uintptr_t) pRequest);
 			}
         }
 		eRet = RMF_SUCCESS;
@@ -704,7 +704,7 @@ rmf_Error rmf_SectionFilter::ReleaseFilter(uint32_t uniqueId)
 
 			//If filter request is processed now It will be pused to the temporary queue and will be removed once processing is done
 			if (0 == pFilter_Request->uiIsSectionUnderProcessing) {
-				ReleaseFilterRequest ((uint32_t)pFilter_Request);
+				ReleaseFilterRequest ((uintptr_t)pFilter_Request);
 			}
 			else
 			{

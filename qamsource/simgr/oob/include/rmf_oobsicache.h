@@ -1454,7 +1454,7 @@ public:
        rmf_Error cache_si_entries(const char *siOOBCacheLocation);
 	rmf_Error cache_sns_entries(const char *siOOBSNSCacheLocation);
         rmf_Error write_crc_for_si_and_sns_cache(const char* pSICache, const char* pSISNSCache);
-        uint32_t get_dsg_transport_stream_handle(void);
+        uintptr_t get_dsg_transport_stream_handle(void);
         rmf_osal_Bool isVersioningByCRC32(void);
         uint32_t calc_mpeg2_crc(uint8_t * data, uint32_t len);
 	void AddSiEventListener(rmf_OobSiEventListener *pSiEventListener);

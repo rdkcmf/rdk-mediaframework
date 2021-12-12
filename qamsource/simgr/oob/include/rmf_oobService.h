@@ -34,7 +34,7 @@
 
 #include "rmf_qamsrc_common.h"
 
-typedef uint32_t rmf_SiServiceHandle;
+typedef uintptr_t rmf_SiServiceHandle;
 
 /**
  * @struct Oob_ProgramInfo
