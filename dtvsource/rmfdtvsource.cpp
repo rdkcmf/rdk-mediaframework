@@ -288,6 +288,8 @@ class RMFDTVSourcePrivate : public RMFMediaSourcePrivate
       RMFResult play(float& speed, double& time);
       RMFResult stop();
 
+      void StatusMonitor(void);
+
       rmf_osal_Mutex m_mutex;
 
       rmf_osal_ThreadId m_monitor_id;
@@ -297,8 +299,12 @@ class RMFDTVSourcePrivate : public RMFMediaSourcePrivate
       struct lws *m_wsi;
       rmf_osal_Cond m_connected;
 
-      bool m_run_monitor;
-      rmf_osal_Cond m_monitor_stopped;
+      bool m_run_wsmonitor;
+      rmf_osal_Cond m_wsmonitor_stopped;
+
+      bool m_run_statusmonitor;
+      rmf_osal_ThreadId m_status_id;
+      rmf_osal_Cond m_statusmonitor_stopped;
 
    private:
       unsigned int m_id;
@@ -310,6 +316,7 @@ class RMFDTVSourcePrivate : public RMFMediaSourcePrivate
          RPCRequest* &request);
 
       static void WSMonitor(void *param);
+      static void StatusTask(void *param);
 };
 
 
@@ -336,8 +343,8 @@ RMFDTVSourcePrivate::RMFDTVSourcePrivate(RMFDTVSource *parent) : RMFMediaSourceP
 
       rmf_osal_mutexNew(&m_mutex);
 
-      m_run_monitor = true;
-      rmf_osal_condNew(false, false, &m_monitor_stopped);
+      m_run_wsmonitor = true;
+      rmf_osal_condNew(false, false, &m_wsmonitor_stopped);
 
       m_wsi = CreateWebsocketInterface();
       if (m_wsi != NULL)
@@ -391,11 +398,11 @@ RMFDTVSourcePrivate::~RMFDTVSourcePrivate()
    RDK_LOG(RDK_LOG_DEBUG, "LOG.RDK.DTV", "[%s:%d]\n", __FUNCTION__, __LINE__);
 
    /* Stop the websocket monitor thread */
-   m_run_monitor = false;
-   rmf_osal_condWaitFor(m_monitor_stopped, 2000);
+   m_run_wsmonitor = false;
+   rmf_osal_condWaitFor(m_wsmonitor_stopped, 2000);
 
    rmf_osal_threadDestroy(m_monitor_id);
-   rmf_osal_condDelete(m_monitor_stopped);
+   rmf_osal_condDelete(m_wsmonitor_stopped);
 
    if (m_context != NULL)
    {
@@ -571,87 +578,65 @@ RMFResult RMFDTVSourcePrivate::open(const char* url, char* mimetype)
 
             if (m_play_handle >= 0)
             {
-               unsigned int pmtpid = 0;
-               char request_string[16];
+               /* A valid play handle means the tuner and demux will also be valid,
+                * so request the status to get these values */
+               snprintf(params_string, sizeof(params_string), "status@%u", m_play_handle);
 
-               snprintf(request_string, sizeof(request_string), "status@%u", m_play_handle);
-
-               /* Now get the status to find out the tuner, demux, PMT PID and service ID of the
-                * service that was requested. The PMT PID won't be known immediately if this is the
-                * first time the transport has been tuned to, so request it a number of times
-                * until the PID is returned */
-               for (unsigned int loop = 0; (result == RMF_RESULT_SUCCESS) && (loop != 10) && (pmtpid == 0); loop ++)
+               result = SendRequest(params_string, NULL, id);
+               if (result == RMF_RESULT_SUCCESS)
                {
-                  result = SendRequest(request_string, NULL, id);
-                  if (result == RMF_RESULT_SUCCESS)
+                  request = NULL;
+
+                  if (WaitForResponse(id, false, 3000, request) && (request != NULL))
                   {
-                     if (WaitForResponse(id, false, 3000, request) && (request != NULL))
+                     unsigned int tuner;
+                     unsigned int demux;
+
+                     if (request->GetResponseValue(JSON_TUNER_STRING, tuner))
                      {
-                        unsigned int tuner;
-                        unsigned int demux;
-                        const char *uri;
-
-                        /* If the PMT PID isn't available yet then the other values aren't read */
-                        if (request->GetResponseValue(JSON_PMTPID_STRING, pmtpid) && (pmtpid != 0) && (pmtpid < 0x1fff))
-                        {
-                           g_object_set(m_source, "pmt-pid", pmtpid, NULL);
-
-                           if (request->GetResponseValue(JSON_TUNER_STRING, tuner))
-                           {
-                              g_object_set(m_source, "tuner", tuner, NULL);
-                           }
-                           else
-                           {
-                              RDK_LOG(RDK_LOG_ERROR, "LOG.RDK.DTV", "[%s:%d]: No %s value in status\n",
-                                 __FUNCTION__, __LINE__, JSON_TUNER_STRING);
-                           }
-
-                           if (request->GetResponseValue(JSON_DEMUX_STRING, demux))
-                           {
-                              g_object_set(m_source, "demux", demux, NULL);
-                           }
-                           else
-                           {
-                              RDK_LOG(RDK_LOG_ERROR, "LOG.RDK.DTV", "[%s:%d]: No %s value in status\n",
-                                 __FUNCTION__, __LINE__, JSON_DEMUX_STRING);
-                           }
-
-                           if (request->GetResponseValue(JSON_DVBURI_STRING, uri))
-                           {
-                              if (sscanf(uri, "\"%*u.%*u.%u\"", &serv_id) == 1)
-                              {
-                                 g_object_set(m_source, "serv-id", serv_id, NULL);
-                              }
-                              else
-                              {
-                                 RDK_LOG(RDK_LOG_ERROR, "LOG.RDK.DTV", "[%s:%d]: Failed to extract the service ID from \"%s\"\n",
-                                    __FUNCTION__, __LINE__, uri);
-                              }
-                           }
-                           else
-                           {
-                              RDK_LOG(RDK_LOG_ERROR, "LOG.RDK.DTV", "[%s:%d]: No %s value in status\n",
-                                 __FUNCTION__, __LINE__, JSON_DVBURI_STRING);
-                           }
-                        }
-                        else
-                        {
-                           RDK_LOG(RDK_LOG_ERROR, "LOG.RDK.DTV", "[%s:%d]: No %s value in status\n",
-                              __FUNCTION__, __LINE__, JSON_PMTPID_STRING);
-                        }
-
-                        rmf_osal_mutexAcquire(m_mutex);
-                        m_request_list.remove(request);
-                        rmf_osal_mutexRelease(m_mutex);
+                        g_object_set(m_source, "tuner", tuner, NULL);
                      }
                      else
                      {
-                        RDK_LOG(RDK_LOG_ERROR, "LOG.RDK.DTV", "[%s:%d]: Failed to get response for request %u\n",
-                           __FUNCTION__, __LINE__, id);
-                        result = RMF_RESULT_INTERNAL_ERROR;
+                        RDK_LOG(RDK_LOG_ERROR, "LOG.RDK.DTV", "[%s:%d]: No %s value in status\n",
+                           __FUNCTION__, __LINE__, JSON_TUNER_STRING);
+                     }
+
+                     if (request->GetResponseValue(JSON_DEMUX_STRING, demux))
+                     {
+                        g_object_set(m_source, "demux", demux, NULL);
+                     }
+                     else
+                     {
+                        RDK_LOG(RDK_LOG_ERROR, "LOG.RDK.DTV", "[%s:%d]: No %s value in status\n",
+                           __FUNCTION__, __LINE__, JSON_DEMUX_STRING);
+                     }
+
+                     /* Start a background task to wait to get the required info so playing can start */
+                     m_run_statusmonitor = true;
+                     rmf_osal_condNew(false, false, &m_statusmonitor_stopped);
+
+                     result = rmf_osal_threadCreate(StatusTask, (void *)this, RMF_OSAL_THREAD_PRIOR_DFLT,
+                        RMF_OSAL_THREAD_STACK_SIZE, &m_status_id, "StatusTask");
+                     if (result != RMF_SUCCESS)
+                     {
+                        rmf_osal_condDelete(m_statusmonitor_stopped);
+
+                        RDK_LOG(RDK_LOG_ERROR, "LOG.RDK.DTV", "[%s:%d]: Failed to create the status monitor task, error %d\n",
+                           __FUNCTION__, __LINE__, result);
                      }
                   }
+                  else
+                  {
+                     RDK_LOG(RDK_LOG_ERROR, "LOG.RDK.DTV", "[%s:%d]: Failed to get response for request %u\n",
+                        __FUNCTION__, __LINE__, id);
+                  }
                }
+            }
+            else
+            {
+               RDK_LOG(RDK_LOG_ERROR, "LOG.RDK.DTV", "[%s:%d]: Failed to get a play handle\n", __FUNCTION__, __LINE__);
+               result = RMF_RESULT_INTERNAL_ERROR;
             }
          }
       }
@@ -695,6 +680,16 @@ RMFResult RMFDTVSourcePrivate::close()
       }
 
       m_play_handle = -1;
+
+      if (m_run_statusmonitor)
+      {
+         /* The status monitor is still running, so request it to stop */
+         m_run_statusmonitor = false;
+         rmf_osal_condWaitFor(m_statusmonitor_stopped, 4000);
+      }
+
+      rmf_osal_threadDestroy(m_status_id);
+      rmf_osal_condDelete(m_statusmonitor_stopped);
    }
 
    /* Clear all requests from the list */
@@ -832,14 +827,99 @@ void RMFDTVSourcePrivate::WSMonitor(void *param)
 {
    RMFDTVSourcePrivate *priv = (RMFDTVSourcePrivate *)param;
 
-   while(priv->m_run_monitor)
+   while(priv->m_run_wsmonitor)
    {
       lws_service(priv->m_context, 500);
    }
 
-   rmf_osal_condSet(priv->m_monitor_stopped);
+   rmf_osal_condSet(priv->m_wsmonitor_stopped);
 }
 
+void RMFDTVSourcePrivate::StatusTask(void *param)
+{
+   RMFDTVSourcePrivate *priv = (RMFDTVSourcePrivate *)param;
+
+   RDK_LOG(RDK_LOG_INFO, "LOG.RDK.DTV", "[%s:%d]: Starting status monitor\n", __FUNCTION__, __LINE__);
+
+   priv->StatusMonitor();
+
+   if (!priv->m_run_statusmonitor)
+   {
+      /* Only need to set the condition if stop has been requested */
+      rmf_osal_condSet(priv->m_statusmonitor_stopped);
+   }
+
+   priv->m_run_statusmonitor = false;
+
+   RDK_LOG(RDK_LOG_INFO, "LOG.RDK.DTV", "[%s:%d]: Status monitor stopped\n", __FUNCTION__, __LINE__);
+}
+
+void RMFDTVSourcePrivate::StatusMonitor(void)
+{
+   unsigned int pmtpid;
+   char request_string[16];
+   unsigned int id;
+   RMFResult result;
+   RPCRequest *request;
+   unsigned int serv_id;
+
+   /* Keep requesting the play status until the PMT PID is returned, or this task is told to stop */
+   pmtpid = 0;
+
+   snprintf(request_string, sizeof(request_string), "status@%u", m_play_handle);
+
+   while ((pmtpid == 0) && m_run_statusmonitor)
+   {
+      result = SendRequest(request_string, NULL, id);
+      if (result == RMF_RESULT_SUCCESS)
+      {
+         request = NULL;
+
+         if (WaitForResponse(id, false, 3000, request) && (request != NULL))
+         {
+            const char *uri;
+
+            /* If the PMT PID isn't available yet then the other values aren't read */
+            if (request->GetResponseValue(JSON_PMTPID_STRING, pmtpid) && (pmtpid != 0) && (pmtpid < 0x1fff))
+            {
+               if (request->GetResponseValue(JSON_DVBURI_STRING, uri))
+               {
+                  if (sscanf(uri, "\"%*u.%*u.%u\"", &serv_id) == 1)
+                  {
+                     g_object_set(m_source, "serv-id", serv_id, NULL);
+                     g_object_set(m_source, "pmt-pid", pmtpid, NULL);
+                  }
+                  else
+                  {
+                     RDK_LOG(RDK_LOG_ERROR, "LOG.RDK.DTV", "[%s:%d]: Failed to extract the service ID from \"%s\"\n",
+                        __FUNCTION__, __LINE__, uri);
+                  }
+               }
+               else
+               {
+                  RDK_LOG(RDK_LOG_ERROR, "LOG.RDK.DTV", "[%s:%d]: No %s value in status\n",
+                     __FUNCTION__, __LINE__, JSON_DVBURI_STRING);
+               }
+            }
+            else
+            {
+               RDK_LOG(RDK_LOG_ERROR, "LOG.RDK.DTV", "[%s:%d]: No %s value in status\n",
+                  __FUNCTION__, __LINE__, JSON_PMTPID_STRING);
+               pmtpid = 0;
+            }
+
+            rmf_osal_mutexAcquire(m_mutex);
+            m_request_list.remove(request);
+            rmf_osal_mutexRelease(m_mutex);
+         }
+         else
+         {
+            RDK_LOG(RDK_LOG_ERROR, "LOG.RDK.DTV", "[%s:%d]: Failed to get response for request %u\n",
+               __FUNCTION__, __LINE__, id);
+         }
+      }
+   }
+}
 
 /**
  * @class   RMFDTVSource
