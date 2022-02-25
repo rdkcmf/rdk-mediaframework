@@ -26,6 +26,7 @@
 #include <global_event_map.h>
 #include "IPDSocketManager.h"
 
+#include "secure_wrapper.h"
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <ifaddrs.h>
@@ -50,6 +51,8 @@
 #include "ip_types.h"
 #include "xchanResApi.h"
 
+#define SOCKET_SUCCESS 0
+#define SOCKET_INVALID_PARAM -1
 static unsigned char recv_buf[2048];
 
 static rmf_osal_ThreadId ThreadIdTC = 0;
@@ -120,22 +123,23 @@ static void ipdirect_unicast_udp_socket_task(void * arg)
 
     if ( exitStatus == 0 )
     {
-        char iptablesScript[100];
-        IARM_Result_t iarmResult;
-        IARM_Bus_SYSMgr_RunScript_t runScriptParam;
+        int return_value=-1;
+        int Result;
+        if(access("/lib/rdk/updateFireWall.sh", F_OK )==0){
+        return_value = v_secure_system("/lib/rdk/updateFireWall.sh runPod %d UDP WAN_INTERFACE",pThreadData->local_port);
+        Result= return_value == 0 ? SOCKET_SUCCESS : SOCKET_INVALID_PARAM;
+        }
+        else{
+                Result= SOCKET_INVALID_PARAM;
+        }
 
-        sprintf(iptablesScript, "/lib/rdk/updateFireWall.sh runPod %d UDP WAN_INTERFACE", pThreadData->local_port);
-
-        runScriptParam.return_value = -1;
-        strcpy(runScriptParam.script_path, iptablesScript);
-        iarmResult = IARM_Bus_Call(IARM_BUS_SYSMGR_NAME, IARM_BUS_SYSMGR_API_RunScript, &runScriptParam, sizeof(runScriptParam));
-        if (IARM_RESULT_SUCCESS == iarmResult)
+        if (SOCKET_SUCCESS == Result)
         {
-            exitStatus = runScriptParam.return_value;
+            exitStatus = return_value;
         }
         else
         {
-            RDK_LOG(RDK_LOG_ERROR, "LOG.RDK.POD", "ipdirect_unicast_udp_socket_task: IARM_Bus_Call failed with %d\n", iarmResult);
+            RDK_LOG(RDK_LOG_ERROR, "LOG.RDK.POD", "ipdirect_unicast_udp_socket_task: IARM_Bus_Call failed with %d\n", Result);
         }
 
         RDK_LOG(RDK_LOG_INFO, "LOG.RDK.POD","ipdirect_unicast_udp_socket_task: RunScript = %d\n", exitStatus);
