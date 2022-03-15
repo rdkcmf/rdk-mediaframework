@@ -56,6 +56,11 @@ extern "C"{
 #include "rdk_logger_milestone.h"
 #endif
 
+/* These headers are added to notify the systimemgr regarding stt receive event*/
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <time.h>
+
 /**
  * @file rmf_oobsisttmgr.cpp
  * @brief Out of band SI system time table managaer
@@ -318,6 +323,19 @@ rmf_Error rmf_OobSiSttMgr::update_systime(unsigned long t, bool fromNTP)
     }
 
     RDK_LOG(RDK_LOG_DEBUG, "LOG.RDK.SYS","update_Systime: updating the system time. currtime.tv_sec = %d, timesec.tv_sec = %d\n", currtime.tv_sec, timesec.tv_sec);
+    int sysTimeFd = open("/tmp/systimemgr/stt", O_WRONLY|O_CREAT|O_CLOEXEC|O_NOCTTY,0644 );
+    if (sysTimeFd >= 0 ){
+	    RDK_LOG(RDK_LOG_INFO,"LOG.RDK.SYS","Touching the file /tmp/systimemgr/stt to notify the event STT_ACQUIRED to systimemgr \n");
+	    struct timespec ts[2];
+            timespec_get(&ts[0], TIME_UTC);
+            ts[1] = ts[0];
+            if (futimens(sysTimeFd, ts) != 0)
+            {
+                RDK_LOG(RDK_LOG_INFO,"LOG.RDK.SYS","Failed to change attribute of the file /tmp/systimemgr/stt \n");
+            }
+            close(sysTimeFd);
+    }
+
 
     //Error Checking. We cannot assume that STT has the right time, so try to adapt and be as right(not only with regards
     //to time but with regards to stability of components dependent on time) as possible if the STT has error in time.
