@@ -1,0 +1,19 @@
+ps | grep monitorRMF |grep -v grep|awk '{print $1};'|xargs kill -9
+ps | grep runXRE |grep -v grep|awk '{print $1};'|xargs kill -9
+ps | grep Receiver |grep -v grep|awk '{print $1};'|xargs kill -9
+wget http://localhost:8080/vldms/rmfstreamer/exit
+sleep 2
+cd /mnt/nfs/env
+export PFC_ROOT=/
+source ../bin/target-snmp/sbin/restart_snmpd.sh
+export VL_ECM_RPC_IF_NAME="wan"
+export VL_DOCSIS_DHCP_IF_NAME="wan"
+export VL_DOCSIS_WAN_IF_NAME="wan:1"
+
+LD_LIBRARY_PATH=/opt/hold:/lib:/usr/local/Qt/lib:/usr/local/lib:/mnt/nfs/lib:/mnt/nfs/bin/target-snmp/lib:$LD_LIBRARY_PATH
+GST_PLUGIN_PATH=/lib/gstreamer-0.10:/usr/local/lib/gstreamer-0.10:/mnt/nfs/gstreamer-plugins
+export GST_PLUGIN_PATH GST_PLUGIN_SCANNER GST_REGISTRY
+export PATH HOME LD_LIBRARY_PATH
+ulimit -c unlimited
+rmfApp
+

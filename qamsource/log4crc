@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<!DOCTYPE log4c SYSTEM "">
+
+<!-- -------------------------------------------------------------------------
+
+<log4c version="1.2.3">
+
+    <config>
+        <bufsize>0</bufsize>
+        <debug level="0"/>
+        <nocleanup>0</nocleanup>
+        <reread>0</reread>
+    </config>
+
+    <!-- ---------------------------------------------------------------------
+        Layouts
+         We have created custom layouts for both "basic" and "dated" formats 
+         that have no carriage returns.  All log statements must have their 
+         own carriage returns, if desired.
+         Listed below are the available layouts.
+    -->
+    <layout name="basic" type="basic_nocr"/>
+    <layout name="dated" type="dated_nocr"/>
+
+    <!-- ---------------------------------------------------------------------
+        Appenders
+         Only use the appenders explicitly listed below for our file/stdout/
+         stderr appenders.  This new appender has an explicit fflush() command 
+         for each log that will ensure that stdout/stderr messages are output 
+         to the screen immediately
+
+         stream_env - file or stdout/stderr with env var replacement
+
+         stream_env_append - same as stream_env, but appends to file instead
+                   of overwrite
+
+         stream_env_plus_stdout - same as stream_env, with all messages 
+                   written to stdout as well
+
+         stream_env_append_plus_stdout - save stream_env_plus_stdout, but 
+                   appends file instead of overwrite
+
+         socket_env - TCP/IP socket
+    -->
+
+    <rollingpolicy name="RI_rollingpolicy" type="sizewin" maxsize="10485760" maxnum="10"/>
+    
+    <appender name="stderr" type="stream_env" layout="dated"/>
+    <appender name="syslog" type="syslog" layout="basic"/>
+    <appender name="socket" type="socket_env" layout="basic"/>
+    <appender name="/opt/logs/RILog.txt" type="stream_env_plus_stdout"  layout="dated" />
+    <appender name="RI_rollingfileappender" type="rollingfile" logdir="/opt/logs/" prefix="ocapri_log.txt" layout="dated" rollingpolicy="RI_rollingpolicy"/>
+    <appender name="stdout" type="stream_env" layout="dated"/>
+
+    <!-- ---------------------------------------------------------------------
+        Priorities (log levels)
+         Available priorities that can be applied to categories are listed 
+         below in order of decreasing priority:
+
+         fatal
+            Indicates error severe enough to prevent RI from continuing to execute.
+                     
+         error
+            A significant error has occurred, preventing normal operation of the RI. 
+              
+         warn 
+            Some problem has occurred, but application logic has been able to handle
+            it in a reasonable manner. 
+            
+         info 
+            Used to monitor major (domain-level) operational behavior of the system.
+             
+         debug
+            Mostly useful for developers to monitor internal logic and operational states. 
+            
+         trace
+            Only meaningful to developers, primarily for monitoring code execution paths.
+    -->
+
+    <!-- ---------------------------------------------------------------------
+        Top-most category for the RI Platform.
+         Declare the default logging configuration. This is done by declaring
+         the root category, associating it with a priority, and one of the 
+         appenders declared above.  
+         
+         More detailed component-level logging can be enabled by specifying 
+         lower levels for one or more of the categories listed below.
+    -->
+    
+    <category name="RI" priority="info" appender="stdout"/>
+
+    <!-- <category name="RI" priority="error" appender="syslog"/> -->
+    <!-- <category name="RI" priority="error" appender="socket"/> -->
+
+    <!-- --------------------------------------------------------------------- 
+        Logging categories available to the Platform are listed below
+        
+         To enable additional logging add a 'priority' attribute for 1 or more 
+         categories.  For example, to enable INFO logging on the pipeline 
+         category, the updated line would look like:
+            category name="RI.Pipeline" priority="info"
+    -->
+
+    <category name="RI.GLib" />
+
+    <category name="RI.GST_Utils" />
+
+    <category name="RI.Pipeline" />
+    <category name="RI.Pipeline.IB" />
+    <category name="RI.Pipeline.OOB" />
+    <category name="RI.Pipeline.TSB" />
+    <category name="RI.Pipeline.HN" />
+	<category name="RI.Pipeline.DSG" />
+    
+	<category name="RI.NET.SNMP" /> 
+	<category name="RI.NET.SNMP.MIB" /> 
+
+    <category name="RI.Platform" />
+
+    <category name="RI.Cablecard" />
+
+    <category name="RI.BackPanel" />
+
+    <category name="RI.SectionCache" />
+
+    <category name="RI.SectionFilter" />
+    <category name="RI.SectionFilter.OOB" />
+
+    <!-- OCAP Stack logging: This category is set with a low priority 
+     level to enable stack messages of any level to pass through to 
+     the log file
+    -->
+    <category name="RI.Stack" priority="trace"/>  
+    <category name="RI.Stack.StdOut" />  
+
+    <category name="RI.IFS"/>
+    <category name="RI.IFS.Remap" />
+
+    <category name="RI.DSG" />
+    <category name="RI.FDC" />
+    <category name="RI.GF" priority="debug" />
+    <category name="RI.SAS" />
+
+    <category name="RI.Tuner" />
+    <category name="RI.Tuner.GST" priority="debug" />
+    <category name="RI.Tuner.HDHR" />
+    <category name="RI.Tuner.VLC" />
+
+    <category name="RI.Display" />
+    <category name="RI.Display.VideoDevice" />
+
+    <category name="RI.UIManager" />
+
+    <category name="RI.UI" />
+    <category name="RI.UI.TvScreen"  />
+    <category name="RI.UI.Console" />
+    <category name="RI.UI.Remote" />
+    <category name="RI.UI.FrontPanel" />
+
+    <category name="RI.Storage" />
+
+</log4c>

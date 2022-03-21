@@ -1,0 +1,12 @@
+Package: rmfapp
+Version: 1.99+git1+c7a6b1e714-r0.0
+Description: This receipe compiles rmfcore code base. This has interface clasess that would be necessary for all the mediaplayers
+ This receipe compiles rmfcore code base. This has interface clasess that
+ would be necessary for all the mediaplayers.
+Section: console/utils
+Priority: optional
+Maintainer: CPE SI Yocto Team
+License: CLOSED
+Architecture: mips32el
+OE: rmfapp
+Depends: libgcc1 (>= 4.8.2), rmfgeneric (>= 1.99+git1+c7a6b1e714), librdkloggers0 (>= 1.99+gitr0+e4b6f49772), libstdc++6 (>= 4.8.2), libc6 (>= 2.19), libglib-2.0-0 (>= 2.38.2), rmfosal (>= 1.99+git1+c7a6b1e714)

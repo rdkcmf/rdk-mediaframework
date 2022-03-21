@@ -1,0 +1,16 @@
+[Unit]
+Description=unit file for runSnmp application
+After=lighttpd.service snmpd.service  udpsvd.service
+Before=runpod.service
+Requires=snmpd.service 
+
+[Service]
+Type=forking
+WorkingDirectory=/usr/bin
+ExecStartPre=/bin/sh -c '/lib/rdk/opt-override.sh'
+ExecStart=/bin/sh -c '/etc/run.sh /usr/bin/runSnmp --config $RMFCONFIGINIFILE --debugconfig $DEBUGINIFILE &'
+Restart=always
+SyslogIdentifier=runSnmp
+
+[Install]
+WantedBy=multi-user.target

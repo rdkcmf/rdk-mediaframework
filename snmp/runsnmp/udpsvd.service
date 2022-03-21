@@ -1,0 +1,16 @@
+[Unit]
+Description=UDPsvd service to run tftp on demand.
+
+Before=runsnmp.service
+After=network-online.target snmpd.service ecmlink.service
+Requires=network-online.target
+
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/device.properties
+RemainAfterExit=yes
+ExecStart=/bin/sh -c "/usr/bin/udpsvd -vvE ${ESTB_ECM_COMMN_IP} 69 tftpd /tmp &"
+
+[Install]
+WantedBy=multi-user.target

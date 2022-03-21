@@ -1,0 +1,13 @@
+[Unit]
+Description=RBI Daemon
+After=lighttpd.service network-online.target rmfstreamer.service
+Requires=network-online.target
+
+[Service]
+WorkingDirectory=/usr/bin
+ExecStart=/bin/sh -c '/lib/rdk/runRBIDaemon &'
+Type=oneshot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

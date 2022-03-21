@@ -1,0 +1,12 @@
+Package: rmfgeneric
+Version: 1.99+git1+c7a6b1e714-r0.0
+Description: This recipe compiles rmfcore code base. This has interface clasess that would be necessary for all the mediaplayers
+ This recipe compiles rmfcore code base. This has interface clasess that
+ would be necessary for all the mediaplayers.
+Section: console/utils
+Priority: optional
+Maintainer: CPE SI Yocto Team
+License: CLOSED
+Architecture: pacexi3v2
+OE: rmfgeneric
+Depends: libgcc1 (>= 4.8.2), gstreamer (>= 0.10.36), librdkloggers0 (>= 1.99+gitr0+e4b6f49772), libsocinit0 (>= 1.99+gitr0+d07a96306b), libxml2 (>= 2.9.1), libz1 (>= 1.2.8), virtual/dtcpmgr, libuuid1 (>= 2.24.1), libffi6 (>= 3.0.13), libdvrmgrsoc0 (>= 1.99+gitr0+d07a96306b), log4c (>= 1.2.3), libc6 (>= 2.19), libglib-2.0-0 (>= 2.38.2), rmfosal (>= 1.99+git1+c7a6b1e714), libtinyxml2.6.2 (>= 2.6.2), libstdc++6 (>= 4.8.2), broadcom-refsw (>= trinity-unified-13.2)

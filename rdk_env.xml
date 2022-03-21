@@ -1,0 +1,11 @@
+<environment>
+  <components>
+    <mediaframework>
+      <dependencies>sdk, dtcp, FusionDale, fcgi, libxml2, curl, yajl, spawn-fcgi, pcre, lighttpd, google-breakpad, e2fsprogs, libgpg-error, libgcrypt, gnutls, libsoup, gssdp, gupnp, gst-plugins-good, fluendo-mpegdemux, icu, opus, net-snmp, xfs, log4c, logger,rdklogger, iarmbus, devicesettings, iarmmgrs, jansson, tinyxml, trm-common, mediaframework-halinstall, mediaframework-dvrmgrhal</dependencies>
+
+      <is_coverity_supported>True</is_coverity_supported> 
+    </mediaframework>
+
+  </components>
+</environment>
+
