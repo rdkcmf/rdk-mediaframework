@@ -2566,9 +2566,9 @@ void RBIManager::printTunerActivityStatusMap(void)
 
       for(ReceiverList::iterator receiverIdListIter = receiverIdList.begin(); receiverIdListIter != receiverIdList.end(); ++receiverIdListIter)
       {
-         if((*receiverIdListIter).liveDVRState.DVR)
+         if((*receiverIdListIter).receiverActivity.liveDVRState.DVR)
          {
-            switch((*receiverIdListIter).liveDVRState.Live_TSB)
+            switch((*receiverIdListIter).receiverActivity.liveDVRState.Live_TSB)
             {
                case RBI_LIVE:
                   liveDVRString = std::string("Live-DVR");
@@ -2585,7 +2585,7 @@ void RBIManager::printTunerActivityStatusMap(void)
          }
          else
          {
-            switch((*receiverIdListIter).liveDVRState.Live_TSB)
+            switch((*receiverIdListIter).receiverActivity.liveDVRState.Live_TSB)
             {
                case RBI_LIVE:
                   liveDVRString = std::string("Live");
@@ -2597,15 +2597,21 @@ void RBIManager::printTunerActivityStatusMap(void)
             }
          }
          INFO("\t\t%s\t%s\t%s\t%s\t%s",
-            (*receiverIdListIter).receiverId,
-            (*receiverIdListIter).activityState,
-            (*receiverIdListIter).tuneTime,
-            (*receiverIdListIter).lastActivityTime,
+            (*receiverIdListIter).receiverActivity.receiverId,
+            (*receiverIdListIter).receiverActivity.activityState,
+            (*receiverIdListIter).receiverActivity.tuneTime,
+            (*receiverIdListIter).receiverActivity.lastActivityTime,
             liveDVRString.c_str());
+
+         RecordingIds::iterator recordingIdIter = (*receiverIdListIter).recordingIds.begin();
+         for( ; recordingIdIter != (*receiverIdListIter).recordingIds.end(); recordingIdIter++)
+         {
+            INFO("\t\trecordingIds %s\n", (*recordingIdIter).c_str());
+         }
       }
    }
 
-   INFO("ReceiverId map size %d", m_ReceiverIdMap.size());
+   INFO("ReceiverId map size %zu", m_ReceiverIdMap.size());
    for (ReceiverIdMap::iterator receiverIdMapIter = m_ReceiverIdMap.begin(); receiverIdMapIter != m_ReceiverIdMap.end(); receiverIdMapIter++)
    {
       srcUriTemp = receiverIdMapIter->first;
@@ -2639,28 +2645,35 @@ void RBIManager::setSourceTunerStatus( const char *receiverId, const char *tuner
    pthread_mutex_unlock( &m_mutex );
 }
 
-void RBIManager::addReceiverId(const char *uri, const char *receiverId, int isLiveSrc)
+void RBIManager::addReceiverId(const char *uri, const char *receiverId, int isLiveSrc, const char *recordingId)
 {
-   INFO("addReceiverId source URI %s ReceiverId %s isLiveSrc %d", uri, receiverId, isLiveSrc);
+   INFO("addReceiverId source URI %s ReceiverId %s isLiveSrc %d recordingId %s\n", uri, receiverId, isLiveSrc, recordingId);
    std::string srcUri(uri);
-   ReceiverActivity receiverActivity;
+   ReceiverData receiverData;
    struct timeval tv;
    RBI_LIVEDVR liveDVR = (RBI_LIVEDVR)isLiveSrc;
+   std::string recordingIdString;
 
    gettimeofday( &tv, 0 );
 
-   memset(&receiverActivity, 0, sizeof(receiverActivity));
-   strncpy( receiverActivity.receiverId, receiverId, sizeof(receiverActivity.receiverId)-1);
-   strncpy( receiverActivity.activityState, "Active", sizeof(receiverActivity.activityState)-1);
-   snprintf( receiverActivity.tuneTime, sizeof(receiverActivity.tuneTime)-1, "%lld", UTCMILLIS(tv));
+   memset(&receiverData.receiverActivity, 0, sizeof(receiverData.receiverActivity));
+   strncpy( receiverData.receiverActivity.receiverId, receiverId, sizeof(receiverData.receiverActivity.receiverId)-1);
+   strncpy( receiverData.receiverActivity.activityState, "Active", sizeof(receiverData.receiverActivity.activityState)-1);
+   snprintf( receiverData.receiverActivity.tuneTime, sizeof(receiverData.receiverActivity.tuneTime)-1, "%lld", UTCMILLIS(tv));
+   receiverData.recordingIds.clear();
+   if(recordingId)
+   {
+      recordingIdString = std::string(recordingId);
+      receiverData.recordingIds.push_back(recordingIdString);
+   }
 
    if(liveDVR == RBI_DVR)
    {
-      receiverActivity.liveDVRState.DVR = 1;
+      receiverData.receiverActivity.liveDVRState.DVR = 1;
    }
    else
    {
-      receiverActivity.liveDVRState.Live_TSB = liveDVR;
+      receiverData.receiverActivity.liveDVRState.Live_TSB = liveDVR;
    }
 
    pthread_mutex_lock( &m_mutex );
@@ -2669,7 +2682,7 @@ void RBIManager::addReceiverId(const char *uri, const char *receiverId, int isLi
    {
       ReceiverList receiverIdList;
 
-      receiverIdList.push_back(receiverActivity);
+      receiverIdList.push_back(receiverData);
       m_srcUriMap.insert( std::make_pair( srcUri, receiverIdList ));
    }
    else
@@ -2679,24 +2692,43 @@ void RBIManager::addReceiverId(const char *uri, const char *receiverId, int isLi
 
       for( ; receiverIdListIter != receiverIdList.end(); receiverIdListIter++)
       {
-         if(strcmp((*receiverIdListIter).receiverId, receiverId) == 0)
+         if(strcmp((*receiverIdListIter).receiverActivity.receiverId, receiverId) == 0)
          {
-            INFO("ReceiverId %s already found in Source URI map", receiverId );
+            INFO("ReceiverId %s already found in Source URI map", receiverId);
 
-            snprintf( (*receiverIdListIter).tuneTime, sizeof((*receiverIdListIter).tuneTime)-1, "%lld", UTCMILLIS(tv));
+            snprintf( (*receiverIdListIter).receiverActivity.tuneTime, sizeof((*receiverIdListIter).receiverActivity.tuneTime)-1, "%lld", UTCMILLIS(tv));
 
             if(liveDVR == RBI_DVR)
-               (*receiverIdListIter).liveDVRState.DVR = 1;
+            {
+               if(recordingId)
+               {
+                  RecordingIds::iterator recordingIdIter = (*receiverIdListIter).recordingIds.begin();
+                  for( ; recordingIdIter != (*receiverIdListIter).recordingIds.end(); recordingIdIter++)
+                  {
+                     if (recordingIdString.compare(*recordingIdIter) == 0)
+                     {
+                        ERROR("recordingId %s already exist", recordingId);
+                        break;
+                     }
+                  }
+                  if(recordingIdIter == (*receiverIdListIter).recordingIds.end())
+                     (*receiverIdListIter).recordingIds.push_back(recordingIdString);
+               }
+
+               if((*receiverIdListIter).recordingIds.empty())
+                  (*receiverIdListIter).receiverActivity.liveDVRState.DVR = 1;
+            }
             else
-               (*receiverIdListIter).liveDVRState.Live_TSB = liveDVR;
+             (*receiverIdListIter).receiverActivity.liveDVRState.Live_TSB = liveDVR;
 
             break;
          }
       }
       if(receiverIdListIter == receiverIdList.end())
       {
-         receiverIdList.push_back(receiverActivity);
+         receiverIdList.push_back(receiverData);
       }
+
       m_srcUriMap[srcUri] = receiverIdList;
    }
 
@@ -2704,12 +2736,17 @@ void RBIManager::addReceiverId(const char *uri, const char *receiverId, int isLi
    pthread_mutex_unlock( &m_mutex );
 }
 
-void RBIManager::removeReceiverId(const char *uri, const char *receiverId, int isLiveSrc)
+void RBIManager::removeReceiverId(const char *uri, const char *receiverId, int isLiveSrc, const char *recordingId)
 {
-   INFO("removeReceiverId source URI %s ReceiverId %s isLiveSrc %d", uri, receiverId, isLiveSrc);
+   INFO("removeReceiverId source URI %s ReceiverId %s isLiveSrc %d recordingId %s\n", uri, receiverId, isLiveSrc, recordingId);
    std::string srcUri(uri);
    std::string strReceiverId(receiverId);
    RBI_LIVEDVR liveDVR = (RBI_LIVEDVR)isLiveSrc;
+   std::string recordingIdString;
+   if(recordingId)
+   {
+      recordingIdString = std::string(recordingId);
+   }
 
    pthread_mutex_lock( &m_mutex );
    SrcUriMap::iterator srcUriMap_iter = m_srcUriMap.find(srcUri);
@@ -2725,14 +2762,31 @@ void RBIManager::removeReceiverId(const char *uri, const char *receiverId, int i
 
       for( ; receiverIdListIter != receiverIdList.end(); receiverIdListIter++)
       {
-         if(strcmp((*receiverIdListIter).receiverId, receiverId) == 0)
+         if(strcmp((*receiverIdListIter).receiverActivity.receiverId, receiverId) == 0)
          {
             if(liveDVR == RBI_DVR)
-               (*receiverIdListIter).liveDVRState.DVR = 0;
+            {
+               if(recordingId)
+               {
+                  RecordingIds::iterator recordingIdIter = (*receiverIdListIter).recordingIds.begin();
+                  for( ; recordingIdIter != (*receiverIdListIter).recordingIds.end(); recordingIdIter++)
+                  {
+                     if (recordingIdString.compare(*recordingIdIter) == 0)
+                     {
+                        recordingIdIter = (*receiverIdListIter).recordingIds.erase(recordingIdIter);
+                        break;
+                     }
+                  }
+                  if(recordingIdIter == (*receiverIdListIter).recordingIds.end())
+                     ERROR("recordingId %s not found in the list", recordingId);
+               }
+               if((*receiverIdListIter).recordingIds.size() == 0)
+                  (*receiverIdListIter).receiverActivity.liveDVRState.DVR = 0;
+            }
             else
-               (*receiverIdListIter).liveDVRState.Live_TSB = 0;
+               (*receiverIdListIter).receiverActivity.liveDVRState.Live_TSB = 0;
 
-            if(((*receiverIdListIter).liveDVRState.Live_TSB == 0) && ((*receiverIdListIter).liveDVRState.DVR == 0))
+            if((((*receiverIdListIter).receiverActivity.liveDVRState.Live_TSB == 0) && ((*receiverIdListIter).receiverActivity.liveDVRState.DVR == 0)))
                receiverIdListIter = receiverIdList.erase(receiverIdListIter);
          }
       }
@@ -2764,15 +2818,15 @@ void RBIManager::getTunerStatus(std::string sourceUri, ReceiverActivity recActiv
 
       for(ReceiverList::iterator receiverIdListIter = receiverIdList.begin(); receiverIdListIter != receiverIdList.end(); ++receiverIdListIter)
       {
-         memcpy( &recActivity[*totalReceivers], &(*receiverIdListIter), sizeof(ReceiverActivity));
+         memcpy( &recActivity[*totalReceivers], &(*receiverIdListIter).receiverActivity, sizeof(ReceiverActivity));
 
          if(m_ReceiverIdMap.size() > 0)
          {
-            ReceiverIdMap::iterator receiverIdMapIter = m_ReceiverIdMap.find(std::string((*receiverIdListIter).receiverId));
+            ReceiverIdMap::iterator receiverIdMapIter = m_ReceiverIdMap.find(std::string((*receiverIdListIter).receiverActivity.receiverId));
 
             if ( receiverIdMapIter != m_ReceiverIdMap.end() )
             {
-               activity = m_ReceiverIdMap[std::string((*receiverIdListIter).receiverId)];
+               activity = m_ReceiverIdMap[std::string((*receiverIdListIter).receiverActivity.receiverId)];
 
                strcpy( recActivity[*totalReceivers].activityState, activity.activityState.c_str());
                strcpy( recActivity[*totalReceivers].lastActivityTime, activity.lastActivityTime.c_str());

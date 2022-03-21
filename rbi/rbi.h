@@ -883,7 +883,15 @@ typedef struct _XREActivity
    std::string lastActivityTime;
 }XREActivity;
 
-typedef std::list<ReceiverActivity> ReceiverList;
+typedef std::list<std::string> RecordingIds;
+
+typedef struct _ReceiverData
+{
+   ReceiverActivity receiverActivity;
+   RecordingIds recordingIds;
+}ReceiverData;
+
+typedef std::list<ReceiverData> ReceiverList;
 
 // Map < Key, list>
 // Map < ocap_locator, list of ReceiverList>
@@ -971,8 +979,8 @@ class RBIManager
       }
 
       void setSourceTunerStatus( const char *receiverId, const char *tunerActivityStatus, const char *lastActivityTime, const char *lastActivityAction );
-      void addReceiverId(const char *uri, const char *receiverId, int isLiveSrc);
-      void removeReceiverId(const char *uri, const char *receiverId, int isLiveSrc);
+      void addReceiverId(const char *uri, const char *receiverId, int isLiveSrc, const char *recordingId);
+      void removeReceiverId(const char *uri, const char *receiverId, int isLiveSrc, const char *recordingId);
       void getTunerStatus(std::string sourceUri, ReceiverActivity recActivity[], size_t *totalReceivers);
       void printTunerActivityStatusMap(void);
       const char* curlUserAgent(void);

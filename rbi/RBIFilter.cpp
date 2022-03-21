@@ -74,8 +74,8 @@ public:
     RMFResult init();
     RMFResult term();
     RMFResult setSourceURI( const char *uri );
-    RMFResult addReceiverId( const char *uri, const char *receiverId, int isLiveSrc);
-    RMFResult removeReceiverId( const char *uri, const char *receiverId, int isLiveSrc);
+    RMFResult addReceiverId( const char *uri, const char *receiverId, int isLiveSrc, const char *recordingId);
+    RMFResult removeReceiverId( const char *uri, const char *receiverId, int isLiveSrc, const char *recordingId);
 
 private:
     bool m_initialized;
@@ -126,14 +126,14 @@ RMFResult RBIFilterPrivate::setSourceURI( const char *uri )
    return result;
 }
 
-RMFResult RBIFilterPrivate::addReceiverId( const char *uri, const char *receiverId, int isLiveSrc)
+RMFResult RBIFilterPrivate::addReceiverId( const char *uri, const char *receiverId, int isLiveSrc, const char *recordingId)
 {
    RMFResult result;
 
    m_rbm= RBIManager::getInstance();
    if ( m_rbm )
    {
-      m_rbm->addReceiverId( uri, receiverId, isLiveSrc);
+      m_rbm->addReceiverId( uri, receiverId, isLiveSrc, recordingId);
       result= RMF_RESULT_SUCCESS;
    }
    else
@@ -144,14 +144,14 @@ RMFResult RBIFilterPrivate::addReceiverId( const char *uri, const char *receiver
    return result;
 }
 
-RMFResult RBIFilterPrivate::removeReceiverId( const char *uri, const char *receiverId, int isLiveSrc)
+RMFResult RBIFilterPrivate::removeReceiverId( const char *uri, const char *receiverId, int isLiveSrc, const char *recordingId)
 {
    RMFResult result;
 
    m_rbm= RBIManager::getInstance();
    if ( m_rbm )
    {
-      m_rbm->removeReceiverId( uri, receiverId, isLiveSrc);
+      m_rbm->removeReceiverId( uri, receiverId, isLiveSrc, recordingId);
       result= RMF_RESULT_SUCCESS;
    }
    else
@@ -347,13 +347,13 @@ RMFResult RBIFilter::setSourceURI( const char *uri )
    return result;
 }
 
-RMFResult RBIFilter::addReceiverId( const char *receiverId, int isLiveSrc)
+RMFResult RBIFilter::addReceiverId( const char *receiverId, int isLiveSrc, const char *recordingId)
 {
    RMFResult result;
 
    if ( FILTER_IMPL )
    {
-      result= FILTER_IMPL->addReceiverId( this->m_srcLocator.c_str(), receiverId, isLiveSrc);
+      result= FILTER_IMPL->addReceiverId( this->m_srcLocator.c_str(), receiverId, isLiveSrc, recordingId);
    }
    else
    {
@@ -363,13 +363,13 @@ RMFResult RBIFilter::addReceiverId( const char *receiverId, int isLiveSrc)
    return result;
 }
 
-RMFResult RBIFilter::removeReceiverId( const char *receiverId, int isLiveSrc)
+RMFResult RBIFilter::removeReceiverId( const char *receiverId, int isLiveSrc, const char *recordingId)
 {
    RMFResult result;
 
    if ( FILTER_IMPL )
    {
-      result= FILTER_IMPL->removeReceiverId( this->m_srcLocator.c_str(), receiverId, isLiveSrc);
+      result= FILTER_IMPL->removeReceiverId( this->m_srcLocator.c_str(), receiverId, isLiveSrc, recordingId);
    }
    else
    {

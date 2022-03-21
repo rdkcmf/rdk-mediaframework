@@ -47,9 +47,9 @@ public:
 
     RMFResult setSource(IRMFMediaSource* source);
 
-    RMFResult addReceiverId( const char *receiverId, int isLiveSrc=1);
+    RMFResult addReceiverId( const char *receiverId, int isLiveSrc=1, const char *recordingId=NULL);
 
-    RMFResult removeReceiverId( const char *receiverId, int isLiveSrc=1);
+    RMFResult removeReceiverId( const char *receiverId, int isLiveSrc=1, const char *recordingId=NULL);
 
     virtual operator RMFQAMSrc*() const;
     static RBIFilter *getInstance( IRMFMediaSource *src, std::string locator );
