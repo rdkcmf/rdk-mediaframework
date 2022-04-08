@@ -8519,6 +8519,7 @@ bool RBIStreamProcessor::processSCTEDescriptors( unsigned char *packet, int cmd,
                                     }
                                     else if ((segmentationUpidType == 0xF) && (distributor || provider ))
                                     {
+                                       char *retStrStr=NULL;
                                        if( provider && ( strstr( (char*)temp, (const char*)PROVIDER_STR ) != NULL ) )
                                        {
                                           validRequest = true;
@@ -8543,6 +8544,20 @@ bool RBIStreamProcessor::processSCTEDescriptors( unsigned char *packet, int cmd,
                                           strncpy( poData.zone, (char*)&packet[descriptorOffset+2+2+moff], ulen);
                                           poData.zone[ulen]= 0;
                                           segmentationUsed = true;
+                                       }
+                                       else if( distributor && ((strstr((char*)temp, (const char*)AIR_DATE)) !=NULL ))
+                                       {
+                                          retStrStr = strtok((char*)temp, (const char*)AIR_DATE);
+                                          if(retStrStr != NULL)
+                                          {
+                                             poData.windowStart = std::strtoll(retStrStr, 0, 0);
+                                             INFO("poData.windowStart %s %lld", retStrStr, poData.windowStart );
+                                             segmentationUsed = true;
+                                          }
+                                          else
+                                          {
+                                             ERROR("retStrStr is NULL");
+                                          }
                                        }
                                     }
 

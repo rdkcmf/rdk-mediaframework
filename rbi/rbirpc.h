@@ -94,6 +94,7 @@
 #define MERLIN_STR         "urn:merlin:linear:stream:"
 #define ADZONE_STR         "urn:comcast:location:vde-adzone:"
 #define SERVICESOURCE_STR  "private:comcast_qam_gateway:"
+#define AIR_DATE           "urn:comcast:altcon:airdate:"
 
 #define DISTRIBUTOR         "Distributor"
 #define PROVIDER            "Provider"
@@ -227,6 +228,7 @@ typedef struct _PO_Data
    unsigned char contentId[RBI_MAX_DATA];
    char serviceSource[RBI_MAX_DATA];
    char zone[RBI_MAX_DATA];
+   long long windowStart;
    char elementId[RBI_MAX_DATA];
    char elementBreakId[RBI_MAX_DATA];
    SegmentUpidElement segmentUpidElement;

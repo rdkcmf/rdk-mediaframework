@@ -1306,9 +1306,16 @@ bool parseXmlPREQPlacementOpportunity( TiXmlElement *pElement, SessionData *sess
          {
             result= parseXmlPREQOpportunityConstraints( pChild->ToElement(), session );
          }
-         else if (session->distributorSignal && ( strcmp( childName, "core:Ext" ) == 0 ))
+         else if (session->distributorSignal)
          {
-            result= parseXmlPREQCoreExt( pChild->ToElement(), session, opportunity );
+            if( strcmp( childName, "core:Ext" ) == 0 )
+            {
+               result= parseXmlPREQCoreExt( pChild->ToElement(), session, opportunity );
+            }
+            else if( strcmp( childName, "adm:LinearAvailBinding" ) == 0 )
+            {
+               // TODO: Parse and verify LinearAvailBinding
+            }
          }
          else if (!session->distributorSignal && ( strcmp( childName, "adm:Entertainment" ) == 0 ))
          {
@@ -2940,7 +2947,7 @@ char* formatTime( long long utcTime, bool useUtc, char *buffer )
    {
       if ( gmtime_r( &tv_sec, &tmTime) )
       {
-         sprintf( buffer, "%4d-%02d-%02dT%02d:%02d:%02d.%03d+00:00",
+         sprintf( buffer, "%4d-%02d-%02dT%02d:%02d:%02d.%03dZ",
                   tmTime.tm_year+1900,
                   tmTime.tm_mon+1,
                   tmTime.tm_mday,
@@ -3086,6 +3093,7 @@ std::string* createPlacementRequest( SessionData *session, RBI_InsertionOpportun
    TiXmlElement *playPositionStart= 0;
    TiXmlElement *opportunityEntertainment = 0;
    TiXmlElement *opportunityConstraints = 0;
+   TiXmlElement *linearAvailBinding=0;
    TiXmlElement *content= 0;
    std::string liveDVRString;
    unsigned int i=0;
@@ -3372,7 +3380,44 @@ std::string* createPlacementRequest( SessionData *session, RBI_InsertionOpportun
 
       placementOpportunity->SetAttribute("serviceRegistrationRef","-");
 
-      if (distributorSignal == false)
+      if (distributorSignal)
+      {
+         if(opportunity->poData.windowStart)
+         {
+            /** Add LinearAvailBinding */
+            linearAvailBinding = new TiXmlElement("adm:LinearAvailBinding");
+            if (linearAvailBinding )
+            {
+               linearAvailBinding->SetAttribute("opportunityNumber", opportunity->poData.segmentUpidElement.segmentNum);
+            }
+            else
+            {
+               errorLine= __LINE__;
+               goto exit;
+            }
+
+            elmnt= new TiXmlElement("adm:Window");
+            if ( elmnt )
+            {
+               if ( formatTime((opportunity->poData.windowStart * 1000), true, work) )
+               {
+                  elmnt->SetAttribute("start", work);
+                  elmnt->SetAttribute("end", work);
+               }
+               else
+               {
+                  errorLine= __LINE__;
+                  goto exit;
+               }
+            }
+            linearAvailBinding->LinkEndChild(elmnt);
+            elmnt= 0;
+
+            placementOpportunity->LinkEndChild(linearAvailBinding);
+            linearAvailBinding= 0;
+         }
+      }
+      else
       {
          if(strlen(opportunity->poData.elementBreakId) > 0)
             placementOpportunity->SetAttribute("breakId", opportunity->poData.elementBreakId);
