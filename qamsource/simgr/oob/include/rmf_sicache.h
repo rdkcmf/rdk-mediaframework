@@ -103,17 +103,17 @@ typedef enum rmf_SiServiceInformationType
 } rmf_SiServiceInformationType;
 
 /* PSI DB Supported handle types */
-typedef uint32_t rmf_SiTransportStreamHandle;
-typedef uint32_t rmf_SiProgramHandle;
-typedef uint32_t rmf_SiServiceComponentHandle;
-typedef uint32_t rmf_SiRatingDimensionHandle;
+typedef uintptr_t rmf_SiTransportStreamHandle;
+typedef uintptr_t rmf_SiProgramHandle;
+typedef uintptr_t rmf_SiServiceComponentHandle;
+typedef uintptr_t rmf_SiRatingDimensionHandle;
 
 /* SI DB Supported handle types */
-typedef uint32_t rmf_SiServiceHandle;
+typedef uintptr_t rmf_SiServiceHandle;
 typedef uint32_t rmf_SiServiceDetailsHandle;
-typedef uint32_t rmf_SiRatingDimensionHandle;
+typedef uintptr_t rmf_SiRatingDimensionHandle;
 
-typedef uint32_t rmf_SiGenericHandle; // Cast before use...
+typedef uintptr_t rmf_SiGenericHandle; // Cast before use...
 
 
 /**
