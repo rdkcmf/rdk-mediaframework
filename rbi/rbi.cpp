@@ -1458,7 +1458,7 @@ int RBIHTTPInsertSource::receiveData( unsigned char *data, int dataLen )
    int consumed= 0, retProcessPackets = 0;
    rmf_Error ret;
    
-   INFO( "RBIHTTPInsertSource::receivedData: got %d bytes", dataLen );
+   TRACE1( "RBIHTTPInsertSource::receivedData: got %d bytes", dataLen );
 
    if ( m_threadStopRequested )
    {
@@ -2291,7 +2291,7 @@ int RBIManager::ageInsertOpportunities( std::string sessionId )
             else
             {
                numPending= 1;
-               INFO("RBI Pending opportunity good, utcTimeCurrent[%llx] utcTrigger[%llx] m_definitionRequestTimeout[%d]", utcTimeCurrent, pending.utcTrigger, m_definitionRequestTimeout );
+               DEBUG("RBI Pending opportunity good, utcTimeCurrent[%llx] utcTrigger[%llx] m_definitionRequestTimeout[%d]", utcTimeCurrent, pending.utcTrigger, m_definitionRequestTimeout );
             }
          }
       }      
@@ -5927,7 +5927,7 @@ int RBIStreamProcessor::processPackets( unsigned char* packets, int size, int *i
    }
    if( acceptedSize == 0 )
    {
-      INFO("acceptedSize is zero. size is %d", size);
+      DEBUG("acceptedSize is zero. size is %d", size);
    }
    return acceptedSize;
 }
