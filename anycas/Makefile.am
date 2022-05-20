@@ -6,7 +6,7 @@ DIST_SUBDIRS =
 
 AM_CXXFLAGS =  -fdata-sections -ffunction-sections -pthread $(GST_CFLAGS) \
               -I${srcdir}/include -I${srcdir}/src/include -I=/usr/include/opencdm \
-              ${GLIB_CFLAGS}
+	      ${GLIB_CFLAGS} -std=c++17 
 
 lib_LTLIBRARIES = libocdmmock.la libanycas.la
 
