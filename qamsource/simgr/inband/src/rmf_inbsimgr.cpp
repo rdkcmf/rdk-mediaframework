@@ -3881,7 +3881,8 @@ rmf_Error rmf_InbSiMgr::releaseFilter(uint32_t filterId)
      ** Release Mutex
      */
     rmf_osal_mutexRelease(g_sitp_psi_mutex);
-
+    return RMF_INBSI_SUCCESS;
+    
 }
 
 rmf_Error rmf_InbSiMgr::set_filter(rmf_PsiParam *psiParam, uint32_t *pFilterId)
