@@ -16,6 +16,9 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 */
+/*Based on sample code which is  Copyright (C) GStreamer developers
+Licensed under the MIT License*/
+
 #include "mediadiscover.h"
 
 void MediaDiscoverCallbacks::on_discovered_cb (GstDiscoverer *discoverer, GstDiscovererInfo *info, GError *err, MediaDiscover *md)
