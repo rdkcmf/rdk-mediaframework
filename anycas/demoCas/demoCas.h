@@ -292,7 +292,14 @@ public:
                 sprintf(pvtData, "write keys data");
                 RDK_LOG(RDK_LOG_INFO, "LOG.RDK.ANYCAS", "[%s:%d] pvtData = 0x%x\n", __FUNCTION__, __LINE__, pvtData);
                 uint16_t pid = 0x1001;
-                uint32_t addr = (uint32_t)pvtData;
+                uintptr_t addr = (uintptr_t)pvtData;
+                if(sizeof(addr) == 64)
+                {
+                    keyHandle.push_back((addr & 0xFF00000000000000) >> 56);
+                    keyHandle.push_back((addr & 0xFF000000000000) >> 48);
+                    keyHandle.push_back((addr & 0xFF0000000000) >> 40);
+                    keyHandle.push_back((addr & 0xFF00000000) >> 32);
+                }
                 keyHandle.push_back((addr & 0xFF000000) >> 24);
                 keyHandle.push_back((addr & 0xFF0000) >> 16);
                 keyHandle.push_back((addr & 0xFF00) >> 8);
