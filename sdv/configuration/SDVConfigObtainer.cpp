@@ -700,16 +700,18 @@ rmf_Error SDVConfigObtainer::readPersistentFile(SDV_CONFIGUTATION_FILE_TYPE file
 size_t SDVConfigObtainer::writeFileToMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp){
     size_t realsize = size * nmemb;
     SDV_FILE_DATA *mem = (SDV_FILE_DATA *)userp;
-    mem->memory = (char*) realloc(mem->memory,sizeof(char) * ( mem->size + realsize + 1));
-    if(mem->memory == NULL) {
-        RDK_LOG( RDK_LOG_ERROR,  "LOG.RDK.QAMSRC","[SDVConfigObtainer] %s() not eneogh memory to download file\n",__FUNCTION__ );
-        return 0;
+    if(0 != realsize)
+    {
+        mem->memory = (char*) realloc(mem->memory,sizeof(char) * ( mem->size + realsize + 1));
+        if(mem->memory == NULL) {
+            RDK_LOG( RDK_LOG_ERROR,  "LOG.RDK.QAMSRC","[SDVConfigObtainer] %s() not eneogh memory to download file\n",__FUNCTION__ );
+            return 0;
+        }
+
+        memcpy(&(mem->memory[mem->size]), contents, realsize);
+        mem->size += realsize;
+        mem->memory[mem->size] = 0;
     }
-
-    memcpy(&(mem->memory[mem->size]), contents, realsize);
-    mem->size += realsize;
-    mem->memory[mem->size] = 0;
-
     return realsize;
 }
 
