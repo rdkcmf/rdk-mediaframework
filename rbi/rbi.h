@@ -31,6 +31,9 @@
 #include <mutex>
 #include <thread>
 
+#ifdef HAS_AUTHSERVICE
+#include "libIARM.h"
+#endif
 
 #include "pxcore/rtObject.h"
 #include "pxcore/rtHttpCache.h"
@@ -982,6 +985,11 @@ class RBIManager
       void addReceiverId(const char *uri, const char *receiverId, int isLiveSrc, const char *recordingId);
       void removeReceiverId(const char *uri, const char *receiverId, int isLiveSrc, const char *recordingId);
       void getTunerStatus(std::string sourceUri, ReceiverActivity recActivity[], size_t *totalReceivers);
+#ifdef HAS_AUTHSERVICE
+      void setXifaId(char *xifaId);
+      void setAdvtOptOut(int advtOptOut);
+      void getXifaId(char *xifaId, int *advtOptOut);
+#endif
       void printTunerActivityStatusMap(void);
       const char* curlUserAgent(void);
 
@@ -1033,6 +1041,11 @@ class RBIManager
       // Map < receiverid, Status>
       ReceiverIdMap m_ReceiverIdMap;
       std::string mUserAgent;
+#ifdef HAS_AUTHSERVICE
+      std::string m_xifaId;
+      int m_advtOptOut;
+      std::mutex m_authServiceMutex;
+#endif
 };
 
 #endif

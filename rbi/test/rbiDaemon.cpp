@@ -116,6 +116,10 @@ RFC_ParamData_t ALTCON_RECEIVER,
                 SCHEMA_LOCATION,
                 XMLNS_SCHEMA,
                 XMLSCHEMA_INSTANCE,
+#ifdef HAS_AUTHSERVICE
+                XIFAID_XML_KEY,
+                ADVT_OPT_OUT_KEY,
+#endif
                 SCHEMAS_ADMIN,
                 SCHEMAS_CORE;
 
@@ -1227,7 +1231,11 @@ bool parseXmlPREQClient( TiXmlElement *pElement, SessionData *session, RBI_Inser
                printf("parseXmlPREQClient: missing adm:TargetCode key\n");
                result= false;
             }
-            else if (strcmp( text, ALTCON_RECEIVER.value ) != 0)
+            else if ((strcmp( text, ALTCON_RECEIVER.value ) != 0)
+#ifdef HAS_AUTHSERVICE
+                      && (strcmp( text, XIFAID_XML_KEY.value ) != 0) && (strcmp( text, ADVT_OPT_OUT_KEY.value ) != 0)
+#endif
+                     )
             {
                printf("parseXmlPREQClient: bad adm:TargetCode key value: %s\n", text);
                result= false;
@@ -3297,6 +3305,50 @@ std::string* createPlacementRequest( SessionData *session, RBI_InsertionOpportun
       clientElmnt->LinkEndChild(elmnt);
       elmnt= 0;
 
+#ifdef HAS_AUTHSERVICE
+      if(opportunity->xifaId[0] != '\0')
+      {
+         elmnt= new TiXmlElement("adm:TargetCode");
+         if ( !elmnt )
+         {
+            errorLine= __LINE__;
+            goto exit;
+         }
+         elmnt->SetAttribute("key", XIFAID_XML_KEY.value);
+         text= new TiXmlText((const char*)opportunity->xifaId);
+         if ( !text )
+         {
+            errorLine= __LINE__;
+            goto exit;
+         }
+         elmnt->LinkEndChild(text);
+         text= 0;
+         clientElmnt->LinkEndChild(elmnt);
+         elmnt= 0;
+      }
+
+      if(opportunity->advtOptOut != -1)
+      {
+         elmnt= new TiXmlElement("adm:TargetCode");
+         if ( !elmnt )
+         {
+            errorLine= __LINE__;
+            goto exit;
+         }
+         elmnt->SetAttribute("key", ADVT_OPT_OUT_KEY.value);
+         text= new TiXmlText(opportunity->advtOptOut == 1 ? "1" : "0");
+         if ( !text )
+         {
+            errorLine= __LINE__;
+            goto exit;
+         }
+         elmnt->LinkEndChild(text);
+         text= 0;
+         clientElmnt->LinkEndChild(elmnt);
+         elmnt= 0;
+      }
+#endif
+
       for(i = 0; i < opportunity->totalReceivers; i++)
       {
          elmnt= new TiXmlElement("adm:TargetCode");
@@ -4396,8 +4448,13 @@ int main( int argc, char** argv )
    char RFC_PARAM_SCHEMA_LOCATION[] = "Device.DeviceInfo.X_RDKCENTRAL-COM_RFC.Feature.LSA.Schema_Location";
    char RFC_PARAM_XMLNS_SCHEMA[] = "Device.DeviceInfo.X_RDKCENTRAL-COM_RFC.Feature.LSA.XMLNS_Schema";
    char RFC_PARAM_XMLSCHEMA_INSTANCE[] = "Device.DeviceInfo.X_RDKCENTRAL-COM_RFC.Feature.LSA.XMLSchema_Instance";
+#ifdef HAS_AUTHSERVICE
+   char RFC_PARAM_XIFAID_XML_KEY[] = "Device.DeviceInfo.X_RDKCENTRAL-COM_RFC.Feature.Xifaid_Xml_Key";
+   char RFC_PARAM_ADVT_OPT_OUT_KEY[] = "Device.DeviceInfo.X_RDKCENTRAL-COM_RFC.Feature.Advt_Opt_Out_Key";
+#endif
    char RFC_PARAM_SCHEMAS_ADMIN[] = "Device.DeviceInfo.X_RDKCENTRAL-COM_RFC.Feature.LSA.Schemas_admin";
    char RFC_PARAM_SCHEMAS_CORE[] = "Device.DeviceInfo.X_RDKCENTRAL-COM_RFC.Feature.LSA.Schemas_core";
+
    WDMP_STATUS wdmpStatus;
 
    memset(&ALTCON_RECEIVER, 0, sizeof(ALTCON_RECEIVER));
@@ -4405,6 +4462,10 @@ int main( int argc, char** argv )
    memset(&SCHEMA_LOCATION, 0, sizeof(SCHEMA_LOCATION));
    memset(&XMLNS_SCHEMA, 0, sizeof(XMLNS_SCHEMA));
    memset(&XMLSCHEMA_INSTANCE, 0, sizeof(XMLSCHEMA_INSTANCE));
+#ifdef HAS_AUTHSERVICE
+   memset(&XIFAID_XML_KEY, 0, sizeof(XIFAID_XML_KEY));
+   memset(&ADVT_OPT_OUT_KEY, 0, sizeof(ADVT_OPT_OUT_KEY));
+#endif
    memset(&SCHEMAS_ADMIN, 0, sizeof(SCHEMAS_ADMIN));
    memset(&SCHEMAS_CORE, 0, sizeof(SCHEMAS_CORE));
 
@@ -4432,6 +4493,18 @@ int main( int argc, char** argv )
    printf("getRFCParameter for %s[%s]\n", RFC_PARAM_XMLSCHEMA_INSTANCE, ((WDMP_SUCCESS == wdmpStatus) ? XMLSCHEMA_INSTANCE.value : ""));
    if(wdmpStatus != WDMP_SUCCESS)
      return 0;
+
+#ifdef HAS_AUTHSERVICE
+   wdmpStatus = getRFCParameter(RFC_CALLERID_LSA, RFC_PARAM_XIFAID_XML_KEY, &XIFAID_XML_KEY);
+   printf("getRFCParameter for %s[%s]\n", RFC_PARAM_XIFAID_XML_KEY, ((WDMP_SUCCESS == wdmpStatus) ? XIFAID_XML_KEY.value : ""));
+   if(wdmpStatus != WDMP_SUCCESS)
+     return 0;
+
+   wdmpStatus = getRFCParameter(RFC_CALLERID_LSA, RFC_PARAM_ADVT_OPT_OUT_KEY, &ADVT_OPT_OUT_KEY);
+   printf("getRFCParameter for %s[%s]\n", RFC_PARAM_ADVT_OPT_OUT_KEY, ((WDMP_SUCCESS == wdmpStatus) ? ADVT_OPT_OUT_KEY.value : ""));
+   if(wdmpStatus != WDMP_SUCCESS)
+     return 0;
+#endif
 
    wdmpStatus = getRFCParameter(RFC_CALLERID_LSA, RFC_PARAM_SCHEMAS_ADMIN, &SCHEMAS_ADMIN);
    printf("getRFCParameter for %s[%s]\n", RFC_PARAM_SCHEMAS_ADMIN, ((WDMP_SUCCESS == wdmpStatus) ? SCHEMAS_ADMIN.value : ""));

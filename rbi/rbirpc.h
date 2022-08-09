@@ -257,6 +257,10 @@ typedef struct _RBI_InsertionOpportunity_Data
    ReceiverActivity recActivity[RBI_MAX_RECEIVERS];
    size_t totalReceivers;
    PlacementOpportunityData poData;
+#ifdef HAS_AUTHSERVICE
+   char xifaId[RBI_MAX_DATA];
+   int advtOptOut;
+#endif
 } RBI_InsertionOpportunity_Data; 
 
 /*

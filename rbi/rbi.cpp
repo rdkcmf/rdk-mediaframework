@@ -40,6 +40,10 @@
 #include "rfcapi.h"
 #include "rmfqamsrc.h"
 
+#ifdef HAS_AUTHSERVICE
+#include "authserviceIARM.h"
+#endif
+
 #include <unistd.h>
 #include <sys/time.h>
 
@@ -661,6 +665,27 @@ static IARM_Result_t rbiMonitorPrivateDataHandler( void *data )
    
    return result;
 }
+
+#ifdef HAS_AUTHSERVICE
+static void rbiAuthServiceEventsHandler(const char *owner, int eventId, void *data, unsigned int len)
+{
+   ERROR ("Got iarm event from %s: %d", owner, eventId);
+
+   if (0 == strcmp(owner, IARM_BUS_AUTHSERVICE_NAME))
+   {
+      if (eventId == IARM_BUS_AUTHSERVICE_EVENT_XIFAID_UPDATED)
+      {
+         IARM_BUS_AuthService_XifaId_EventData_t *xifaId = (IARM_BUS_AuthService_XifaId_EventData_t*)data;
+         RBIManager::getInstance()->setXifaId(xifaId->value);
+      }
+      else if (eventId == IARM_BUS_AUTHSERVICE_EVENT_ADVTOPTOUT_UPDATED)
+      {
+         IARM_BUS_AuthService_AdvtOptOut_EventData_t *advtOptOut = (IARM_BUS_AuthService_AdvtOptOut_EventData_t*)data;
+         RBIManager::getInstance()->setAdvtOptOut(advtOptOut->value ? 1 : 0);
+      }
+   }
+}
+#endif
 
 typedef struct _RBIBitRateInfo
 {
@@ -1885,6 +1910,9 @@ RBIManager::RBIManager()
     m_audioReplicationEnabled(false), m_spliceOffset(0), m_spliceTimeout(RBI_DEFAULT_DEFINITION_SPLICE_TIMEOUT),
     m_marginOfError(RBI_DEFAULT_ASSET_DURATION_OFFSET), m_bufferSize(RBI_DEFAULT_DEFINITION_BUFFER_SIZE), m_retryCount(RBI_DEFAULT_PSN_RETRY_COUNT), 
     m_progammerEnablementEnabled(false), m_haveDeviceId(false), m_timeZoneMinutesWest(0), m_STTAcquired(false), m_nextSessionNumber(1)
+#ifdef HAS_AUTHSERVICE
+   , m_advtOptOut(-1)
+#endif
 {
    const char *env;
    RFC_ParamData_t rfcParam1, rfcParam2;
@@ -2054,6 +2082,15 @@ RBIManager::RBIManager()
    IARM_Bus_RegisterCall(RBI_DEFINE_SPOTS, rbiDefineSpotsHandler);
    IARM_Bus_RegisterCall(RBI_MONITOR_PRIVATEDATA, rbiMonitorPrivateDataHandler);
 
+#ifdef HAS_AUTHSERVICE
+   IARM_Result_t ires;
+
+   ires = IARM_Bus_RegisterEventHandler(IARM_BUS_AUTHSERVICE_NAME, IARM_BUS_AUTHSERVICE_EVENT_XIFAID_UPDATED, rbiAuthServiceEventsHandler);
+   ERROR ("Registered XIFAID iarm handler with: %d", ires);
+
+   ires = IARM_Bus_RegisterEventHandler(IARM_BUS_AUTHSERVICE_NAME, IARM_BUS_AUTHSERVICE_EVENT_ADVTOPTOUT_UPDATED, rbiAuthServiceEventsHandler);
+   ERROR ("Registered ADVTOPTOUT iarm handler with: %d", ires);
+#endif
    // Fetch the imagename from the /version.txt for curl userAgent
    {
       std::string line;
@@ -2840,6 +2877,32 @@ void RBIManager::getTunerStatus(std::string sourceUri, ReceiverActivity recActiv
    printTunerActivityStatusMap();
 }
 
+#ifdef HAS_AUTHSERVICE
+void RBIManager::setXifaId(char *xifaId)
+{
+   m_authServiceMutex.lock();
+   m_xifaId = xifaId;
+   ERROR ("xifaId updated to '%s'", xifaId);
+   m_authServiceMutex.unlock();
+}
+
+void RBIManager::setAdvtOptOut(int advtOptOut)
+{
+   m_authServiceMutex.lock();
+   m_advtOptOut = advtOptOut;
+   ERROR ("advtOptOut updated to %d", advtOptOut);
+   m_authServiceMutex.unlock();
+}
+
+void RBIManager::getXifaId(char *xifaId, int *advtOptOut)
+{
+   m_authServiceMutex.lock();
+   strncpy(xifaId, m_xifaId.c_str(), RBI_MAX_DATA);
+   xifaId[RBI_MAX_DATA - 1] = 0;
+   *advtOptOut = m_advtOptOut;
+   m_authServiceMutex.unlock();
+}
+#endif
 const char* RBIManager::curlUserAgent(void)
 {
    return mUserAgent.c_str();
@@ -3667,6 +3730,10 @@ void RBIContext::sendInsertionOpportunity( RBITrigger *trigger )
    opportunity.utcTimeCurrent= UTCMILLIS(tv);
    opportunity.utcTimeOpportunity= trigger->getUTCSpliceTime();
    RBIManager::getInstance()->getTunerStatus(m_sourceUri.c_str(), opportunity.recActivity, &opportunity.totalReceivers );
+
+#ifdef HAS_AUTHSERVICE
+   RBIManager::getInstance()->getXifaId(opportunity.xifaId, &opportunity.advtOptOut);
+#endif
 
    memcpy(&opportunity.poData, trigger->poData(), sizeof(opportunity.poData));
    memset(dateTime, 0, sizeof(dateTime));
