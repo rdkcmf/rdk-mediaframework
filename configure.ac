@@ -372,6 +372,16 @@ AC_ARG_ENABLE([dtv],
 AM_CONDITIONAL([ENABLE_PODMGR], [test x$ENABLE_PODMGR = xtrue])
 AM_CONDITIONAL(BUILD_PODMGR, [test -d qamsource/podmgr/canh])
 AM_CONDITIONAL(BUILD_SUBDIR_PODSERVER, [test -d qamsource/podmgr/podserver])
+AC_ARG_ENABLE([libmediaplayer],
+              AS_HELP_STRING([--enable-libmediaplayer],[enable libmediaplayer plugin (default is no)]),
+              [
+      		case "${enableval}" in
+        	 yes) PLUGIN_SRC="$PLUGIN_SRC libmediaplayer";;
+        	 no)  AC_MSG_ERROR([libmediaplayer plugin is disabled]) ;;
+        	 *) AC_MSG_ERROR([bad value ${enableval} for --enable-libmediaplayer]) ;;
+       		esac
+    	      ],
+    	      [echo "libmediaplayer plugin is disabled"])
 
 m4_syscmd([test -d qamsource/podmgr/canh])
 m4_if(m4_sysval,[0],[AC_CONFIG_FILES([qamsource/podmgr/Makefile])])
@@ -473,6 +483,7 @@ AC_CONFIG_FILES([Makefile
 	 qamsource/dvb/simgr/Makefile
 	 qamsource/dvb/source/Makefile
 	 qamsource/Makefile
+	 libmediaplayer/Makefile
 	 qamsource/sdv/Makefile
 	 qamsource/oobsimgrstub/Makefile
 	 qamsource/main/Makefile
