@@ -1076,6 +1076,7 @@ void RMFMediaSourcePrivate::getCATBuffer(std::vector<uint8_t>& buf, uint32_t* le
 
 bool RMFMediaSourcePrivate::getAudioPidFromPMT(uint32_t*, const std::string&)
 {
+    return false;
 }
 
 void RMFMediaSourcePrivate::setFilter(uint16_t pid, char* filterParam, uint32_t *pFilterId)
