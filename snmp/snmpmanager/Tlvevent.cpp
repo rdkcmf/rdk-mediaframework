@@ -2724,7 +2724,10 @@ void TlvConfig::Set_AllListV1v2v3objvalus(VL_HOST_IP_INFO * pPodIpInfo)
                         RDK_LOG(RDK_LOG_INFO, "LOG.RDK.SNMP", "Enabling support for SNMPv3 queries\n");
                         fputs("includeFile /tmp/.snmp/tls/certs/snmpd_v3.conf", file_rd);
                         fputs("\n",file_rd);
-                    }
+                    } else if ( 0 == strncmp(snmpv3Data.value, "false", 5) ) {
+			RDK_LOG(RDK_LOG_INFO, "LOG.RDK.SNMP", "Disabling support for SNMPv3 queries\n");
+		    }
+
             } else {
                     //RFC configuration for SNMPv3 not available. Defaulting SNMPv3 to true
                     RDK_LOG(RDK_LOG_INFO, "LOG.RDK.SNMP", "RFC configuration for SNMPv3 not available. Defaulting to SNMPv3 true \n");
