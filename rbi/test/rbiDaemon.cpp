@@ -4449,8 +4449,8 @@ int main( int argc, char** argv )
    char RFC_PARAM_XMLNS_SCHEMA[] = "Device.DeviceInfo.X_RDKCENTRAL-COM_RFC.Feature.LSA.XMLNS_Schema";
    char RFC_PARAM_XMLSCHEMA_INSTANCE[] = "Device.DeviceInfo.X_RDKCENTRAL-COM_RFC.Feature.LSA.XMLSchema_Instance";
 #ifdef HAS_AUTHSERVICE
-   char RFC_PARAM_XIFAID_XML_KEY[] = "Device.DeviceInfo.X_RDKCENTRAL-COM_RFC.Feature.Xifaid_Xml_Key";
-   char RFC_PARAM_ADVT_OPT_OUT_KEY[] = "Device.DeviceInfo.X_RDKCENTRAL-COM_RFC.Feature.Advt_Opt_Out_Key";
+   char RFC_PARAM_XIFAID_XML_KEY[] = "Device.DeviceInfo.X_RDKCENTRAL-COM_RFC.Feature.LSA.Xifaid_Xml_Key";
+   char RFC_PARAM_ADVT_OPT_OUT_KEY[] = "Device.DeviceInfo.X_RDKCENTRAL-COM_RFC.Feature.LSA.Advt_Opt_Out_Key";
 #endif
    char RFC_PARAM_SCHEMAS_ADMIN[] = "Device.DeviceInfo.X_RDKCENTRAL-COM_RFC.Feature.LSA.Schemas_admin";
    char RFC_PARAM_SCHEMAS_CORE[] = "Device.DeviceInfo.X_RDKCENTRAL-COM_RFC.Feature.LSA.Schemas_core";
