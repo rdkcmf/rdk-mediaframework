@@ -64,25 +64,34 @@ struct sigaction old_handlers[kNumHandledSignals];
 
 static volatile int32_t manufacturer = CARD_TYPE_UNKNOWN;
 static volatile rmf_osal_Bool bServerInited = FALSE;
+struct sigaction act;
 
-void dumpStatOnCrash(int signum)
-{
+void dumpStatOnCrash(int signum, siginfo_t* info, void* uc)
+{   
     system("top -n 1 -b > /opt/logs/crashStatus.txt");
-    printf("runPod is about to crash, got signal %d, written the system top on /opt/logs/crashStatus.txt \n", signum);
-    signal(signum, SIG_DFL);
-    kill(getpid(), signum);
+    RDK_LOG(RDK_LOG_INFO, "LOG.RDK.QAMSRC","runPod is about to crash, got signal %d, written the system top on /opt/logs/crashStatus.txt \n", signum);
+    memset (&act, 0, sizeof(act));
+    act.sa_handler = SIG_DFL;
+    act.sa_flags = SA_ONSTACK | SA_SIGINFO | SA_NODEFER;
+    sigaction(signum, &act , NULL);
 #ifdef INCLUDE_BREAKPAD
          //allow signal to be processed normally for correct core dump
-         printf("Restore breakpad signal handlers\n");
-         for (int i = 0; i < kNumHandledSignals; ++i) {
+         for (int i = 0; i < kNumHandledSignals; ++i)
+	 {
+           if(signum == kExceptionSignals[i] )
+           {
              if (sigaction(kExceptionSignals[i], &old_handlers[i], NULL) == -1) {
-                 perror ("sigaction");
-                 signal(kExceptionSignals[i], SIG_DFL);
+                 RDK_LOG(RDK_LOG_INFO, "LOG.RDK.QAMSRC","sigaction %d Failed\n", signum);
+                 sigaction(signum, &act , NULL);
              }
+             break;
+           }
          }
-#endif    
+  	
+#endif 
+    if(raise(signum)) RDK_LOG(RDK_LOG_INFO, "LOG.RDK.QAMSRC","signal %d Failed\n", signum);
+    
 }
-
 
 void rmf_PodmgrOOBSICb( rmf_SiGZGlobalState state, uint16_t param, uint32_t optData );
 typedef struct 
@@ -393,9 +402,9 @@ main(int argc, char * argv[])
 	const char* debugConfigFile = NULL;
 	int itr=0;
 
-#ifdef INCLUDE_BREAKPAD
-breakpad_ExceptionHandler();
-#endif
+    #ifdef INCLUDE_BREAKPAD
+    breakpad_ExceptionHandler();
+    #endif
 
 //SunilS - Added to perform SOC-Specific initialization at the beginning of application
 	while (itr < argc)
@@ -452,19 +461,24 @@ breakpad_ExceptionHandler();
 
 #ifdef USE_FRONTPANEL
 	// Initialize IARM to receive IARM bus events 
-
 #ifdef INCLUDE_BREAKPAD
      //Backup breakpad signal handlers in old_handlers
      for (int i = 0; i < kNumHandledSignals; ++i) {
          if (sigaction(kExceptionSignals[i], NULL, &old_handlers[i]) == -1) {
               printf("sigaction failed while trying to fetch existing handlers");
-              return 1;
+	      return 1;
          }
      }
 #endif
+        
 	device::Manager::Initialize();
-    signal(SIGSEGV, dumpStatOnCrash);
-
+        memset (&act, 0, sizeof(act));
+        act.sa_sigaction = &dumpStatOnCrash;
+        act.sa_flags = SA_ONSTACK | SA_SIGINFO | SA_NODEFER;
+        if (sigaction(SIGSEGV, &act , NULL) == -1)
+        {
+          perror("sigaction");
+        }
 	// Initialize front panel
 	fp_init();
 	fp_setupBootSeq();
